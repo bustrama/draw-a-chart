@@ -1,0 +1,31 @@
+# dependencies
+node_modules
+
+# builds
+dist
+dev-dist
+*.tsbuildinfo
+
+# tests
+coverage
+playwright-report
+test-results
+blob-report
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs / os / editors
+*.log
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea
+.claude/settings.local.json
+
+# supabase local
+supabase/.branches
+supabase/.temp

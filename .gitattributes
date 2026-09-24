@@ -1,0 +1,4 @@
+# LF everywhere (the app is built and served from Linux containers).
+* text=auto eol=lf
+*.png binary
+*.ico binary

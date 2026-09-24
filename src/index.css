@@ -1,0 +1,75 @@
+/* Scan only the app sources for class names. With automatic detection, editing any scanned
+   non-module file (docs, test output) makes the Tailwind Vite plugin force a full page reload. */
+@import 'tailwindcss' source('.');
+
+@theme {
+  --color-ink-950: #0b0e13;
+  --color-ink-900: #11151c;
+  --color-ink-850: #151a22;
+  --color-ink-800: #1b212b;
+  --color-ink-700: #252c38;
+  --color-ink-600: #323b4a;
+  --color-ink-400: #6b7588;
+  --color-ink-300: #8a93a6;
+  --color-ink-200: #b5bcc9;
+  --color-ink-100: #d6dbe4;
+  --color-accent: #5aa9ff;
+  --color-up: #26a69a;
+  --color-down: #ef5350;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  color-scheme: dark;
+  background: var(--color-ink-950);
+  /* Pinch gestures belong to the chart; never zoom or rubber-band the page. */
+  touch-action: manipulation;
+  overscroll-behavior: none;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* The chart host owns every gesture inside it. */
+.chart-host {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: contain;
+}
+
+/* Controls: no text selection/callouts on long press, crisp focus ring for keyboard users. */
+.ui-control {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+
+.ui-control:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* Horizontal overflow without a visible scrollbar (narrow split-view layouts). */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
