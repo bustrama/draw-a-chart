@@ -85,10 +85,10 @@ export const AutoFitIcon = (p: IconProps) => (
   </Svg>
 );
 
-export const UserIcon = (p: IconProps) => (
+export const CloudIcon = (p: IconProps) => (
   <Svg {...p}>
-    <circle cx="12" cy="8.5" r="3.5" />
-    <path d="M5 20a7 7 0 0 1 14 0" />
+    <path d="M7 18.5a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 8.5a4 4 0 0 1-.5 7.97V16.5" />
+    <path d="M7 18.5h10" />
   </Svg>
 );
 

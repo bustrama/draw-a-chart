@@ -2,7 +2,8 @@
 
 Personal stylus-first charting PWA for Wyckoff study: **pen draws, fingers navigate, mouse navigates**
 (mouse draws only in explicit mouse-draw mode). React 19 + TS 6 + Vite 8 + Lightweight Charts 5.2 +
-perfect-freehand + Binance Spot public data + optional Supabase sync.
+perfect-freehand + Binance Spot public data + a self-hosted sync server (Node 24, SQLite, WebSocket;
+one Docker container). Public repo: never commit credentials, tokens, `.env` files or personal data.
 
 Read before changing anything substantial:
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): decisions, platform facts, risks
@@ -12,18 +13,18 @@ Read before changing anything substantial:
 ## Commands
 
 ```bash
-npm run dev          # http://localhost:5173 (also on the LAN); add ?provider=mock for offline data
-npm test             # Vitest unit tests
-npm run e2e          # Playwright browser tests (starts its own dev server on port 5174)
-npm run supabase:start && npm run e2e:supabase   # live sync tests vs a LOCAL Supabase stack (Docker; port 5175/553xx)
-npm run supabase:stop                            # the local stack listens on all interfaces with default keys
-npm run typecheck    # tsc -b (app, node config, e2e)
+npm run dev          # http://localhost:5173 (also on the LAN), includes the sync API (.data/dev.sqlite)
+npm test             # Vitest unit tests (app + server)
+npm run e2e          # Playwright: dev server (5174, sync off), production server (4175), multi-device sync
+npm run typecheck    # tsc -b (app, node config, server, tests, e2e)
 npm run lint         # ESLint
 npm run build        # typecheck + production build (dist/)
-npm run preview      # serve the production build
+npm start            # production server: dist/ + sync API on port 8080 (data/)
+docker compose up -d --build   # the self-hosted deployment
 ```
 
-URL switches: `?provider=mock&mockNow=<ms>&mockLive=0` (deterministic data), `?test=1` (exposes `window.__dac` in prod builds; always on in dev).
+URL switches: `?provider=mock&mockNow=<ms>&mockLive=0` (deterministic data), `?test=1` (exposes
+`window.__dac` in prod builds; always on in dev), `?sync=off` (local-only page load).
 
 ## Architectural invariants (do not break)
 
@@ -40,16 +41,24 @@ URL switches: `?provider=mock&mockNow=<ms>&mockLive=0` (deterministic data), `?t
 - Chart data updates are **deferred while a stroke is active** (`beginDeferUpdates`).
 - Pen sessions end only on their own pointer's up/cancel/lostpointercapture (iPad hover uses other ids).
 - Market data layer stays chart-agnostic; drawing engine stays React-agnostic.
+- **Sync:** the client/server contract is `src/sync/protocol.ts` (types only). The server decides who
+  is calling in exactly one place, `identify()` in `server/app.ts` (the hook for auth later); every
+  row keeps its owner. Server write semantics (`server/store.ts`) must match `FakeBackend`.
+- **Never hand-swap the database file:** restore with `server/restore.ts`, which renews the database
+  `generation`; devices resynchronize only when it changes.
+- Server input is hostile: never re-serialize client-supplied objects (rebuild them from checked
+  fields), and every socket path (`upgrade`, `message`) must be crash-proof.
 
 ## Conventions
 
 - TypeScript `erasableSyntaxOnly`: no `enum`, no namespaces, no constructor parameter properties.
+  The server runs as TypeScript (Node type stripping): relative imports in `server/` need `.ts`
+  extensions, and it may only `import type` from `src/`.
 - TypeScript is pinned to 6.0.x because `typescript-eslint` does not support TS 7 yet.
 - Tunable constants live in one place each: `QUICKSHAPE`, `HANDWRITING`, `PALM`, `NAV`.
-- Tests: colocated `*.test.ts` (Vitest, node env); browser tests in `e2e/` (Playwright);
-  live sync tests in `e2e/*.supabase.ts` (own config `e2e/supabase.config.ts`).
+- Tests: colocated `*.test.ts` (Vitest, node env; `server/` too); browser tests in `e2e/`
+  (Playwright). `e2e/sync.spec.ts` starts its own production servers.
 - Don't edit files while a Playwright run is using the dev server: Tailwind is scoped to `src/`,
   but source edits still hot-reload the page under test.
-- Table privileges are explicit in the migration (new Supabase projects grant API roles nothing):
-  any new table needs its own `grant`s, and `migration.test.ts` checks both old and new defaults.
+- Schema changes: append a migration to `MIGRATIONS` in `server/store.ts`; never edit a shipped one.
 - Do not claim hardware behaviour is verified unless it was tested on a physical device.

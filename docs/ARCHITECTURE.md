@@ -14,9 +14,9 @@ reasons behind them, and the platform facts they rest on. Status of each part is
 | Chart | TradingView Lightweight Charts **5.2** | Fast canvas chart with a documented primitive (plugin) API that lets drawings render *inside* the chart's paint pass. No alternative offered a better input or drawing story. |
 | Ink geometry | `perfect-freehand` 1.2 | Pressure-sensitive stroke outlines; about 0.08 µs per point (30k points ≈ 2.5 ms on desktop). The same code renders live and committed ink, so strokes don't "pop" on commit. |
 | Market data | Binance Spot public REST + WebSocket | No keys. Behind a provider interface. |
-| Persistence | IndexedDB (`idb`) locally + Supabase (Auth, Postgres, Realtime) | Local-first; Supabase optional at runtime. |
+| Persistence | IndexedDB (`idb`) on each device + a self-hosted sync server: Node 24, SQLite (`node:sqlite`), WebSocket (`ws`), in one Docker container | Local-first; sync is only needed to share drawings between devices. No accounts yet (see §7). |
 | PWA | `vite-plugin-pwa` 1.x (`registerType: 'prompt'`) | Auto-update could reload mid-stroke, so updates are prompted instead. |
-| Tests | Vitest 5 (unit, PGlite for SQL) + Playwright 1.63 (Chromium via CDP for trusted touch/pen input; WebKit iPad-like context; PWA build) | |
+| Tests | Vitest 5 (unit, including the sync server) + Playwright 1.63 (Chromium via CDP for trusted touch/pen input; WebKit iPad-like context; the production server; multi-device sync) | |
 
 There is no state-management framework. The engine is plain TypeScript classes, and React
 subscribes via `useSyncExternalStore`.
@@ -47,16 +47,27 @@ src/
     TouchNavigator   finger pan/pinch/kinetic/crosshair/axis gestures via the chart API
     palmPolicy.ts    palm rejection rules
   sync/
+    protocol.ts      wire protocol shared with the server (types only)
     localDb.ts       IndexedDB: drawings (+tombstones, server rev), outbox, cursors
     PersistentDocuments  documents backed by IndexedDB (ordered writes, load-race safe)
-    SyncEngine       flush (CAS RPC), pull, realtime merge, previews, retries
-    supabaseRemote   Supabase implementation of RemoteApi; auth.ts = email/password store
+    SyncEngine       flush (compare-and-swap), pull, live merge, previews, retries
+    serverRemote.ts  RemoteApi for the sync server: HTTP + one reconnecting WebSocket
+    session.ts       who this device is on the server (cached; the hook for sign-in later)
   app/
     Workspace.ts     chart composition (chart + feed + engine + navigator + router)
-    runtime.ts       app composition (provider, persistence, sync, auth, previews, workspace)
+    runtime.ts       app composition (provider, persistence, sync, session, previews, workspace)
     screenshot.ts    capture, clipboard, share, download
-  ui/                React controls (top bar, tool rail, palette, screenshot, account/sync)
-supabase/migrations/ schema, RLS, write RPC, realtime + private broadcast policies
+  ui/                React controls (top bar, tool rail, palette, screenshot, sync status)
+server/              self-hosted sync server (Node 24 runs the TypeScript directly)
+  main.ts            production entry (env config, graceful shutdown)
+  backup.ts, restore.ts   online backup; restore with a new generation (devices resynchronize)
+  http.ts            HTTP server: sync API + WebSocket + static dist/ on one port
+  app.ts             the API, the live hub, and identify() (the auth hook)
+  store.ts           SQLite: compare-and-swap writes, pulls, migrations, backup
+  validate.ts        request and preview validation
+  static.ts          built app with cache headers, SPA fallback, traversal guard
+  vitePlugin.ts      the same API inside `npm run dev`
+Dockerfile, docker-compose.yml   one container: the app + its sync server, data on a volume
 ```
 
 ## 3. Input model (the core requirement)
@@ -312,28 +323,76 @@ rewrite.
   - `outbox` holds one coalesced pending change per drawing, with `opId`, `baseRev`, `owner`,
     `sent` and `prevOpIds`.
   - Each local edit writes its record and outbox entry in **one transaction**.
-  - Offline and credential-less use are fully functional; Supabase is optional at runtime.
-- **Outbox ownership.** Each entry records the user it was queued for. Only entries of the
-  signed-in user are sent, so changes made under one account can never be uploaded to another.
-  Edits made while signed out or in local-only mode are adopted by the next sign-in.
+  - Offline use is fully functional; the server is only needed to share drawings between devices.
+- **Outbox ownership.** Each entry records the user it was queued for, and only the current user's
+  entries are sent. Today there is one user; the rule keeps accounts safe once they exist.
 - **Multiple tabs.** Tabs share one IndexedDB. A `BroadcastChannel` announces every local write
   and every merged remote change, so other open tabs reload the affected chart instead of
   showing stale drawings (and later overwriting newer ones).
+- **Self-hosted server** (`server/`, one Docker container):
+  - Node 24 runs the TypeScript directly (type stripping, so no build step); `ws` is its only
+    dependency.
+  - It serves the built app (`dist/`) and the API on one origin: no CORS, and a proxy login
+    (Cloudflare Access) covers both.
+  - Storage is SQLite through `node:sqlite`:
+    - WAL with `synchronous = full`, so a committed write survives a power loss (with `normal` it
+      could be rolled back after devices already had it);
+    - one file on a Docker volume, schema versions in `PRAGMA user_version`;
+    - consistent online backups (`server/backup.ts`, `VACUUM INTO`) and a restore tool
+      (`server/restore.ts`);
+    - a startup check that the file is writable (a read-only file opens silently and only fails
+      on the first write); `/api/health` repeats it for the container health check.
+  - `npm run dev` embeds the same API in the Vite dev server (`server/vitePlugin.ts`).
+- **Server restored or replaced (generation).** The database carries a random `generation`. It
+  changes when `restore.ts` puts a backup in place, and a new (empty) database has its own. The
+  server reports it in `/api/session` and in the `hello` of every live connection; each device
+  stores the one it last synced with.
+  - If it differs, the device's server revisions and pull cursors no longer mean anything. The
+    device queues every drawing it has again as new (base revision 0) and drops its tombstones
+    (`LocalDrawingDb.resetForServer`).
+  - The server keeps its version where it has one (a conflict, which the device adopts). It gets
+    back drawings it lost, e.g. those created after the backup, or everything after a lost volume.
+  - Without this, devices would believe they were in sync with a server that went back in time:
+    newer revisions would be skipped as "already seen", and lost drawings never re-uploaded.
 - **Durable model.** Table `drawings`:
   - one row per drawing, with a client-generated UUID and `user_id`;
-  - `provider`, `symbol`, `timeframe`, `kind`, `data jsonb`;
-  - `deleted` (tombstone), `rev`, `last_op_id`, timestamps.
-- **Security.**
-  - Clients may only `SELECT` their own rows (RLS, `(select auth.uid()) = user_id`); there are no
-    insert/update/delete policies.
-  - Table privileges are explicit: `authenticated` gets `SELECT` only, and `anon` gets nothing.
-    New Supabase projects no longer grant the API roles access to new tables automatically
-    (without the grant every read failed with "permission denied": found by the live tests).
-    Older projects grant everything, which the migration revokes.
-  - All writes go through `apply_drawing_changes(jsonb)`: `SECURITY DEFINER`, `search_path = ''`,
-    explicit ownership checks, executable by `authenticated` only. `rev`, `user_id` and `last_op_id`
-    therefore cannot be tampered with through PostgREST.
-- **Write semantics** (optimistic compare-and-swap):
+  - `provider`, `symbol`, `timeframe`, `kind`, `data` (JSON);
+  - `deleted` (tombstone), `rev`, `last_op_id`, `created_at`;
+  - `updated_at`: server time, strictly increasing, so a pull cursor never skips a write.
+- **Identity, and auth later.**
+  - There is no sign-in. `identify()` in `server/app.ts` is the only place that decides who is
+    calling (HTTP and WebSocket alike, and it may be async), and today it returns the single user
+    `local` for every request.
+  - Every row still has an owner. `GET /api/session` tells the client its user id; the client
+    caches it, so an offline start keeps attributing queued edits to that user.
+  - Adding auth later means:
+    - `identify()` returns null for unauthenticated requests (401, WebSocket refused) and the
+      user otherwise, e.g. from the verified Cloudflare Access JWT (`Cf-Access-Jwt-Assertion`) or
+      a session cookie;
+    - the app shows a sign-in screen when `/api/session` answers 401 (the client already has a
+      `signed-out` state);
+    - with expiring credentials, live connections are closed when they expire (they are only
+      checked when they open);
+    - one data step: assign the rows owned by `local` to the first account
+      (`update drawings set user_id = ? where user_id = 'local'`), and have the client treat
+      outbox entries queued as `local` like unowned ones (adopted by whoever signs in). Otherwise
+      those drawings stay invisible and their edits come back `rejected`.
+  - Cross-site protection: writes require `Content-Type: application/json` (a cross-site form
+    cannot send it), and the live connection only accepts pages of its own origin (`Origin` host =
+    `Host`, or `ALLOWED_ORIGINS`), because WebSockets are not covered by CORS. Not covered: DNS
+    rebinding against the HTTP API from a website visited on the LAN (no `Host` allowlist). With
+    no accounts, the network (LAN or Cloudflare Access) is the boundary.
+- **API.** The contract is `src/sync/protocol.ts`: types only, imported by the client and the
+  server.
+  - `GET /api/health`, `GET /api/session`;
+  - `GET /api/login?next=/path`: redirects back to the app (see Cloudflare below);
+  - `POST /api/changes`: up to 200 changes, a result for each;
+  - `GET /api/drawings?provider&symbol&timeframe&since&limit`: pull, oldest first;
+  - WebSocket `/api/live`:
+    - server → client: `hello`, `rows` (every change, to every device of the user, the writer
+      included), `preview`, `ping`;
+    - client → server: `preview`.
+- **Write semantics** (optimistic compare-and-swap in `server/store.ts`, one transaction per batch):
   - unknown id → insert at rev 1;
   - id owned by someone else → `rejected` (reveals nothing);
   - same `op_id` as the last applied op → `duplicate`, i.e. an idempotent retry (**duplicate prevention**);
@@ -345,11 +404,10 @@ rewrite.
   - A malformed or oversized change → `invalid`. It is reported per change and the rest of the
     batch still applies. The client drops that change and shows a persistent sync error; an
     unrelated successful pull does not hide it.
-  - A per-user quota (100 000 rows) fails the whole call. This is defence in depth in case
-    sign-ups are left open; sign-up is hidden in the UI unless `VITE_ALLOW_SIGNUP=true`.
-  - The function runs on real Postgres in `migration.test.ts` (PGlite): RLS with role switching,
-    direct-write denial, CAS, `prev_op_ids`, idempotency, tombstones, `invalid`, quota. It runs
-    under both privilege defaults (older projects: everything granted; new projects: nothing).
+  - Limits, as a guard against runaway clients:
+    - 100 000 live drawings per user (`MAX_ROWS`; tombstones do not count). A change that would
+      exceed it is `invalid` on its own; edits, deletions and the rest of the batch still apply.
+    - 16 MB per request.
 - **Race-free rebasing** (found and fixed through tests):
   - A change's base revision comes only from state inside the IndexedDB write transaction (the
     pending entry's base, else the record's `rev`). An in-memory "in flight" flag was tried first
@@ -360,45 +418,70 @@ rewrite.
     server yet (the create could be in flight).
 - **Reads**:
   - paged pulls with `updated_at >= cursor - 2 min`, merged by `rev` (re-reads are idempotent);
-  - Realtime Postgres Changes filtered by `user_id` for live updates;
-  - every (re)subscribe, `online` or visibility change triggers a pull (Postgres Changes has no replay).
-- **Ephemeral previews:** in-progress strokes are broadcast (throttled to 90 ms, downsampled) on
-  the private channel `preview:<uid>` (RLS on `realtime.messages`).
-  - They are never persisted.
-  - Points are only computed while the channel is joined, so there is no REST fallback and no
-    work when nobody listens.
+  - live rows over the WebSocket;
+  - every (re)connect, `online` or visibility change triggers a pull (the live feed has no replay).
+- **Connection.** One WebSocket per device:
+  - it reconnects with jittered backoff (1 s, doubling to 30 s), and immediately on `online` or
+    when the app becomes visible again;
+  - subscribers hear "connected" only after the server's `hello`, so the generation is known
+    before they resynchronize;
+  - the server sends a heartbeat every 25 s, so proxies such as Cloudflare keep idle sockets open;
+  - 60 s of silence counts as a dead connection on the client; a missed pong drops it on the server;
+  - an attempt that has not opened within 15 s is abandoned, and coming back to the app after
+    more than 35 s of silence reconnects at once (iOS suspends background sockets);
+  - HTTP requests time out after 30 s, so a hung request cannot block syncing.
+- **Behind Cloudflare Zero Trust:**
+  - the manifest is requested with credentials (`useCredentials`); otherwise Access redirects the
+    anonymous request and installing the app fails;
+  - API requests use `redirect: 'manual'`, so an expired Access session is detected instead of
+    surfacing as a CORS failure. The sync panel then offers **Sign in again**: a navigation to
+    `/api/login?next=…`. The service worker never answers `/api/` from its cache, so the request
+    reaches Access, which shows its login and returns there; the server redirects back into the
+    app. A plain reload would not work: the service worker serves the app shell from cache;
+  - cache headers suit the edge: hashed assets are immutable; `index.html`, `sw.js` and the
+    manifest are always revalidated.
+- **Ephemeral previews:** the stroke in progress (throttled to 90 ms, downsampled) goes over the
+  WebSocket and the server relays it to the user's other devices.
+  - They are never stored. The server rebuilds each one from its known fields before relaying, so
+    nothing unchecked is ever re-serialized.
+  - Points are only computed while the connection is open, so there is no work when nobody listens.
   - The final message says `commit` or `discard`. On `commit` the preview stays until the durable
     drawing arrives; on `discard` it disappears immediately. Previews that stop updating expire
     after 5 s, so no ghost strokes are left behind.
-- **Auth:** email + password. Magic links open in Safari, and iOS Home Screen apps have isolated
-  storage.
-  - Sign-out is local (`scope: 'local'`), so other devices stay signed in.
-  - Local drawings stay on the device.
-- **Verification.** Three layers:
-  - **SQL on Postgres** (PGlite, unit tests): the migration and the write function.
-  - **Sync engine against `FakeBackend`** (unit tests), which implements the RPC's exact semantics:
-    - two devices;
-    - offline queueing;
-    - lost responses, including a lost response followed by another edit;
-    - conflicts;
-    - in-flight rebase;
-    - invalid changes;
-    - sign-out mid-flush and account switches;
-    - catch-up pull;
-    - previews.
-  - **The real app against a local Supabase stack** (`npm run e2e:supabase`: real Postgres, Auth,
-    PostgREST and Realtime in Docker via the Supabase CLI). Two browser profiles act as two
-    devices of one user, and Node-side clients act as a second account. Covered:
-    - drawing and erasing across devices, compared exactly;
-    - live preview while drawing, replaced by the saved drawing;
-    - the offline queue, delivered on reconnect;
-    - a conflicting edit (the server version wins on both devices);
-    - a lost response followed by another edit (applied through `prev_op_ids`);
-    - per-device sign-out (the other device's session still refreshes);
-    - another account can neither read nor overwrite, gets `permission denied` on direct writes,
-      and is refused on the private preview channel, for both listening and sending.
-  - **Not covered:** a hosted project. Its settings differ from the local defaults: Realtime
-    "Allow public access", email confirmation, rate limits.
+- **Verification:**
+  - **Server unit tests:**
+    - the store: compare-and-swap, tombstones, `prev_op_ids`, `invalid`, per-change quota,
+      timestamp order, migrations, generation, the read-only file check, backup;
+    - `restore.ts` run for real, including a stale write-ahead log that must not be replayed (a
+      negative control, with the removal disabled, fails);
+    - the HTTP API and its error codes, `/api/login` (no open redirect), health on an unwritable
+      database, async `identify()`;
+    - the WebSocket: who receives rows, preview relay, heartbeat and dead-peer drop, the Origin
+      check;
+    - hostile input: a preview with 100 000 levels of nesting, a malformed upgrade request, a
+      failing identity check (each crashed the process before the review fix);
+    - static serving: traversal attempts, cache policy, SPA fallback.
+  - **Client against a real in-process server:** `ServerRemote` round trips, reconnect after a
+    server restart (with the new generation), detection of proxy login redirects, and two
+    complete devices (IndexedDB, outbox, sync engine) syncing live.
+  - **Sync engine against `FakeBackend`** (unit tests): offline queueing, lost responses, conflicts,
+    in-flight rebase, invalid changes, user switches, catch-up pull, a replaced server, a restored
+    server.
+  - **Real browsers against the production server** (Playwright `sync` project, a fresh server
+    per test):
+    - two devices draw and erase, compared exactly;
+    - live preview;
+    - a device opened later;
+    - the offline queue;
+    - a conflicting edit;
+    - a lost response followed by another edit;
+    - a server rebuilt with an empty database (devices upload their drawings again);
+    - an expired proxy login: "Sign in again" and back to syncing;
+    - a server restart with automatic reconnect.
+  - **Docker:** the image was built and smoke-tested: health check, app and manifest, API,
+    non-root user, data kept across a restart, graceful stop. The README's compose backup and
+    restore commands were run as written.
+  - **Not covered:** an actual Cloudflare Tunnel and Access setup; physical devices.
 
 ## 8. Screenshot
 
@@ -419,6 +502,8 @@ rewrite.
 | Palm rejection thresholds | Constants in one place (`PALM`, `NAV`); tuned on hardware. |
 | Handwriting misclassification | Handwriting toggle. Glyph vs ink only changes zoom behaviour, never position. |
 | Binance geo-blocking (HTTP 451, e.g. US) | Market-data-only host first; provider interface allows swapping. |
+| `node:sqlite` is still experimental in Node 24 | The image pins Node 24; all SQL sits behind `DrawingStore` (one file), so a switch to `better-sqlite3` stays local. |
+| Cloudflare Tunnel/Access behaviour (idle timeouts, login redirects, manifest fetch) | Heartbeats every 25 s, redirect detection, credentialed manifest; still to be checked on the real setup (DEVICE_TESTING §6). |
 
 ## 10. Known limitations
 
@@ -439,11 +524,14 @@ rewrite.
   modelled but not exposed in the UI.
 - **Binance** returns HTTP 451 in restricted jurisdictions (e.g. the US). Error bodies are
   CORS-opaque, so the exact reason can't be shown in the browser.
-- **Supabase:** tested end to end against a local Supabase stack (the same services as hosted),
-  but not yet against a hosted project; see §7 for what the hosted settings could change.
+- **No accounts:** anyone who can reach the sync server can read and change the drawings. Keep it
+  on the LAN or behind Cloudflare Access; a published port bypasses Access. There is no `Host`
+  allowlist, so DNS rebinding from a website visited on the LAN could reach the HTTP API. §7
+  describes how auth plugs in later, including the one data step.
+- **Cloudflare Zero Trust** was not tested end to end (tunnel, Access login expiry, WebSocket
+  through the tunnel). The known problems are handled in code, see §7.
 - **Clipboard image writes** vary by browser and by iOS Home Screen context; Share and Download are
   the fallbacks.
-- **Signing out** keeps local data on the device (single-user device assumption).
 
 ## 11. Decision log
 
@@ -454,8 +542,12 @@ rewrite.
 | Persist absolute time + price; own fractional mapping | Logical indices; LWC coordinate APIs | Indices shift on history load; LWC converts integer logicals only |
 | Handwriting = rigid glyph notes (sqrt-damped, clamped uniform scale) | Distort with chart; constant pixel size | Legible under non-uniform zoom yet still "belongs" to the chart |
 | Defer market-data updates while the pen is down | Let chart move | The surface must not move under the nib |
-| Writes only via SECURITY DEFINER RPC, read-only RLS | INVOKER RPC + write policies | Rev/owner integrity; tested on Postgres |
-| Email + password auth | Magic link / OTP | iOS Home Screen storage isolation; zero email round trip |
+| Self-hosted sync server in one container | Supabase (hosted or self-hosted) | One user, no accounts, own server: Supabase's auth/Postgres/Realtime stack (about 10 containers self-hosted) is more machinery than needed. The same sync semantics fit in a small Node server. The Supabase version is in the Git history (first commit). |
+| SQLite via `node:sqlite` | Postgres; `better-sqlite3` | One file to back up; no database container; no native module to compile |
+| App and API on one origin | Separate API host | No CORS; one Cloudflare Access application covers both; relative URLs |
+| No auth now; one `identify()` hook; every row owned | Build accounts now | Not needed yet. Adding auth later is contained: the hook, a sign-in screen, and re-owning the `local` rows (§7) |
+| Database generation, devices re-upload on change | Treat restores as out of band | A restored or rebuilt server would otherwise silently diverge from devices that "already have" newer revisions |
+| One WebSocket (`ws`) for live rows and previews | Server-sent events + POST; polling | Two-way (previews), one connection per device, works through Cloudflare Tunnel |
 | TypeScript 6.0 | TypeScript 7 | typescript-eslint requires < 6.1 |
 | perfect-freehand for all ink | Constant-width polylines | Handwriting quality; 0.08 µs/pt makes per-frame outlines affordable |
 
@@ -463,7 +555,8 @@ rewrite.
 
 - **Unit (Vitest)**: time mapping, viewport, candle merge/gaps, feed recovery, REST pacing/backoff,
   stream reconnection, QuickShape, classification, store/undo, palm/navigation logic, sync engine.
-- **SQL (Vitest + PGlite)**: the Supabase migration on real Postgres, with stand-in `auth` objects.
+- **Sync server (Vitest)**: SQLite store, HTTP API, WebSocket hub, static serving, and the client
+  transport against a real in-process server (see §7, Verification).
 - **Browser (Playwright, Chromium)**:
   - trusted **touch** and **pen** input via CDP (`Input.dispatchTouchEvent`, `Input.dispatchMouseEvent` with `pointerType: 'pen'`);
   - anchoring under pan/zoom/resize/history-load, measured against the chart's own bar coordinates, plus painted-pixel checks;
@@ -474,7 +567,8 @@ rewrite.
 - **Browser (Playwright, WebKit)**: iPad-like context (DPR 2, iPad user agent, synthetic pointer
   events) covering drawing, QuickShape, panning, anchoring, pixels, persistence and export. This
   shows engine compatibility, not Apple Pencil behaviour.
-- **PWA (Playwright on the production build)**: manifest, service-worker activation, offline shell reload.
-- **Live sync (Playwright + local Supabase stack, `npm run e2e:supabase`)**: see §7, Verification.
+- **PWA (Playwright against the production server)**: manifest, service-worker activation, offline shell reload.
+- **Multi-device sync (Playwright `sync` project, production server)**: see §7, Verification.
+- **Docker**: image build and a container smoke test (not part of `npm run e2e`).
 - **Not provable in automation:** real Apple Pencil / S Pen behaviour. Covered by the
   [device test procedure](DEVICE_TESTING.md).

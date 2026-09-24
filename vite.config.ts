@@ -3,15 +3,22 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { syncDevServer } from './server/vitePlugin.ts';
 
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    // `npm run dev` also serves the sync API (same origin, like the production server).
+    syncDevServer(),
     VitePWA({
       // 'prompt', not 'autoUpdate': an automatic reload could interrupt a drawing session.
       registerType: 'prompt',
       injectRegister: false,
+      // Behind Cloudflare Access (or any cookie-protected proxy) the manifest must be fetched
+      // with credentials; the default anonymous request is redirected to the login page and
+      // installing the app fails.
+      useCredentials: true,
       includeAssets: ['favicon.svg', 'favicon.ico', 'apple-touch-icon-180x180.png'],
       manifest: {
         name: 'Draw-a-Chart',
@@ -31,9 +38,10 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // App shell only. Market data and Supabase traffic are never cached by the service worker.
+        // App shell only. Market data and sync traffic are never cached by the service worker.
         globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest}'],
         navigateFallback: '/index.html',
+        navigateFallbackDenylist: [/^\/api\//],
         cleanupOutdatedCaches: true,
       },
       devOptions: { enabled: false },
@@ -53,11 +61,11 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: true,
-    // ~215 KB gzipped (React + Lightweight Charts + supabase-js), precached by the service worker.
+    // React + Lightweight Charts in one chunk, precached by the service worker.
     chunkSizeWarningLimit: 900,
   },
   test: {
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'server/**/*.test.ts'],
     environment: 'node',
     restoreMocks: true,
   },

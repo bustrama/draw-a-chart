@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const DEV_PORT = 5174;
-const PREVIEW_PORT = 4175;
+const PROD_PORT = 4175;
 
 export default defineConfig({
   testDir: 'e2e',
@@ -18,15 +18,19 @@ export default defineConfig({
   },
   webServer: [
     {
+      // Dev server with sync off: parallel tests must not see each other's drawings.
       command: `npx vite --port ${DEV_PORT} --strictPort`,
       url: `http://localhost:${DEV_PORT}`,
+      env: { VITE_SYNC_SERVER: 'off', SYNC_DEV_DB: ':memory:' },
       reuseExistingServer: !process.env.CI,
       timeout: 90_000,
     },
     {
-      // Production build for the PWA checks (service worker, manifest, offline shell).
-      command: `npm run build && npx vite preview --port ${PREVIEW_PORT} --strictPort`,
-      url: `http://localhost:${PREVIEW_PORT}`,
+      // The production server (what the Docker image runs) with a fresh build. The sync tests
+      // start their own instances of it on the same dist/.
+      command: 'npm run build && node server/main.ts',
+      url: `http://localhost:${PROD_PORT}/api/health`,
+      env: { PORT: String(PROD_PORT), DB_FILE: ':memory:', STATIC_DIR: 'dist' },
       reuseExistingServer: !process.env.CI,
       timeout: 180_000,
     },
@@ -34,7 +38,7 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      testIgnore: ['**/pwa.spec.ts', '**/webkit.spec.ts'],
+      testIgnore: ['**/pwa.spec.ts', '**/webkit.spec.ts', '**/sync.spec.ts'],
       // hasTouch enables touch emulation so CDP touch input produces real Touch/Pointer events.
       use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${DEV_PORT}`, viewport: { width: 1280, height: 800 }, hasTouch: true },
     },
@@ -55,7 +59,13 @@ export default defineConfig({
     {
       name: 'pwa',
       testMatch: '**/pwa.spec.ts',
-      use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${PREVIEW_PORT}` },
+      use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${PROD_PORT}` },
+    },
+    {
+      // Several devices syncing through the production server (each test starts its own).
+      name: 'sync',
+      testMatch: '**/sync.spec.ts',
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 800 }, hasTouch: true },
     },
   ],
 });

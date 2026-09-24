@@ -58,7 +58,7 @@ for (const size of sizes) {
     await page.getByTestId('screenshot-preview').waitFor();
     await page.screenshot({ path: out('-screenshot-panel') });
     await page.keyboard.press('Escape');
-    await page.getByTestId('account-button').click();
-    await page.screenshot({ path: out('-account-panel') });
+    await page.getByTestId('sync-button').click();
+    await page.screenshot({ path: out('-sync-panel') });
   });
 }

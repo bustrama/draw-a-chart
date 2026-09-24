@@ -26,6 +26,6 @@ Thumbs.db
 .idea
 .claude/settings.local.json
 
-# supabase local
-supabase/.branches
-supabase/.temp
+# sync server databases (dev server: .data/, `npm start`: data/)
+.data
+data

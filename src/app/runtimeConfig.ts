@@ -10,6 +10,7 @@ import type { MarketSelection } from './Workspace';
  *   &mockNow=<ms>             freeze the mock clock (fully reproducible bars)
  *   &mockLive=0               disable mock live updates
  *   &test=1                   expose window.__dac for browser automation (always on in dev)
+ *   &sync=off                 no sync for this page load (drawings stay on the device)
  */
 export function readParams(): URLSearchParams {
   return new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
@@ -24,6 +25,13 @@ export function createProvider(params = readParams()): MarketDataProvider {
     return new MockProvider({ now, liveIntervalMs: live, historyBars });
   }
   return new BinanceProvider();
+}
+
+/** Sync server base URL: '' = this origin (the server also serves the app); null = sync off. */
+export function readSyncServer(params = readParams()): string | null {
+  const configured = (import.meta.env.VITE_SYNC_SERVER ?? '').trim();
+  if (params.get('sync') === 'off' || configured === 'off') return null;
+  return configured.replace(/\/+$/, '');
 }
 
 export function exposeTestHooks(params = readParams()): boolean {

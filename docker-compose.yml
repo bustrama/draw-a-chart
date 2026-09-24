@@ -1,0 +1,35 @@
+# Self-hosted draw-a-chart: the app and its sync server on one port.
+#   docker compose up -d --build
+# Then open http://<server>:8080 on every device (or your Cloudflare Tunnel hostname).
+services:
+  draw-a-chart:
+    build: .
+    image: draw-a-chart:latest
+    container_name: draw-a-chart
+    restart: unless-stopped
+    ports:
+      # LAN access (no sign-in: anyone on the network can use it, bypassing Cloudflare Access).
+      # Behind the tunnel only? Use "127.0.0.1:8080:8080", or drop the mapping when cloudflared
+      # runs in this compose network and targets http://draw-a-chart:8080. Never publish on a VPS.
+      - "8080:8080"
+    volumes:
+      # The SQLite database (draw-a-chart.sqlite). Backup and restore: see README "Self-hosting".
+      - draw-a-chart-data:/data
+    # environment:
+    #   MAX_ROWS: "100000"          # live drawings per user (a guard against runaway clients)
+    #   ALLOWED_ORIGINS: ""         # only if a proxy rewrites the Host header (live connection)
+
+  # Optional: a Cloudflare Tunnel in the same compose project. Create the tunnel in Zero Trust
+  # (Networks > Tunnels), point its public hostname at http://draw-a-chart:8080, and put the
+  # token in a .env file next to this one (never commit it): CLOUDFLARE_TUNNEL_TOKEN=...
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+  #   depends_on:
+  #     - draw-a-chart
+
+volumes:
+  draw-a-chart-data:

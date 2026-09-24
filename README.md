@@ -8,78 +8,97 @@ A personal, stylus-first charting PWA for studying and practising Wyckoff analys
   never draw, and a resting palm is rejected.
 - **The mouse navigates** like any chart. Press `D` (or the mouse button in the tool rail) to draw with it.
 - Binance Spot live candles (BTCUSDT, ETHUSDT · 1m, 5m, 15m, 1h, 4h, 1D).
-- Drawings are anchored to chart time/price, saved locally, and optionally synced in real time
-  across devices via Supabase.
+- Drawings are anchored to chart time/price, saved on the device, and synced live across all
+  your devices through a small self-hosted server (one Docker container).
 - Screenshot: copy to the clipboard, share, or download as PNG.
 
-## Run it
+## Self-hosting (Docker)
+
+One container serves the app and its sync server; drawings live in a SQLite database on a Docker
+volume. There are no accounts: every device that opens the app syncs (see [Security](#security)).
+
+```bash
+git clone https://github.com/bustrama/draw-a-chart.git
+cd draw-a-chart
+docker compose up -d --build
+```
+
+Then open `http://<server>:8080` on each device. Update with `git pull && docker compose up -d --build`.
+
+**HTTPS.** Installing the app to the home screen, starting it offline and copying screenshots
+need HTTPS. With **Cloudflare Zero Trust**:
+
+1. Create a tunnel (Networks → Tunnels) and add a public hostname whose service is
+   `http://<server-ip>:8080`, or `http://draw-a-chart:8080` when `cloudflared` runs in the same
+   compose project (a commented-out service is in `docker-compose.yml`; keep the token in `.env`).
+2. Protect the hostname with an Access application if you like. The app is built for it: the
+   manifest is requested with credentials, and when the Access session expires the sync panel
+   offers **Sign in again** (a normal reload would be answered by the app's offline cache and
+   never reach the Access login).
+3. WebSockets must stay enabled for the hostname (they are by default); live sync uses one.
+
+**Backups.** Everything is in one SQLite file. This writes a consistent copy while the server
+runs and prints its path (for example `/data/backup-2026-09-24T18-00-00-000Z.sqlite`):
+
+```bash
+docker compose exec draw-a-chart node --disable-warning=ExperimentalWarning server/backup.ts
+```
+
+Copy it off the server with `docker compose cp draw-a-chart:<printed path> .`.
+
+To restore a backup (`backup.sqlite` in the current directory), with the server stopped:
+
+```bash
+docker compose stop draw-a-chart
+docker compose cp ./backup.sqlite draw-a-chart:/data/restore.sqlite
+docker compose run --rm --no-deps draw-a-chart node --disable-warning=ExperimentalWarning server/restore.ts /data/restore.sqlite
+docker compose start draw-a-chart
+```
+
+`restore.ts` copies the backup into place (owned by the server's user), removes the old
+write-ahead log (SQLite would otherwise replay it onto the restored file), and marks the database
+as restored. Devices notice when they reconnect: the backup's version of each drawing wins, and
+drawings the backup does not have are uploaded again from the devices that still have them. The
+same happens automatically if the server ever starts with an empty database (e.g. a lost volume).
+
+Server settings (environment variables) are listed in `.env.example` and `server/main.ts`.
+
+### Security
+
+There is no sign-in: anyone who can reach the server can read and change the drawings.
+
+- **Behind Cloudflare Access only?** Don't publish the port on the LAN: in `docker-compose.yml`
+  use `127.0.0.1:8080:8080`, or no port mapping with `cloudflared` in the same compose network.
+  A published port is reachable by every device on the network without going through Access
+  (and Docker's published ports bypass host firewalls such as ufw). On a VPS, never publish it.
+- **On a LAN:** the live connection refuses pages from other sites. A website visited on your
+  network could still reach the HTTP API through DNS rebinding, so treat the LAN as trusted.
+- **Accounts later.** One function (`identify()` in `server/app.ts`) decides who is calling, and
+  every drawing has an owner. Today everything belongs to the single user `local`. Turning on
+  accounts means implementing `identify()` (e.g. verifying the Cloudflare Access JWT) plus one
+  data step: assign the `local` drawings to your account and let devices adopt edits they queued
+  as `local` (see ARCHITECTURE §7).
+
+## Develop
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open http://localhost:5173. Append `?provider=mock` for offline, deterministic data.
+Open http://localhost:5173. `npm run dev` includes the sync API (database in `.data/`), and it
+listens on the LAN, so phones and tablets can open `http://<this-pc>:5173` and sync with it.
+Append `?provider=mock` for offline, deterministic chart data, or `?sync=off` to keep a page load
+local-only.
 
 | Command | What it does |
 |---|---|
-| `npm test` | Unit tests (Vitest) |
-| `npm run e2e` | Browser tests (Playwright: Chromium + WebKit + PWA build). The first time, run `npm run e2e:install`. |
-| `npm run e2e:supabase` | Live sync tests against a local Supabase stack (see [Testing sync without a Supabase account](#testing-sync-without-a-supabase-account)) |
-| `npm run build` / `npm run preview` | Production build / serve it |
+| `npm test` | Unit tests (Vitest), including the sync server |
+| `npm run e2e` | Browser tests (Playwright: Chromium, WebKit, the production build, multi-device sync). The first time, run `npm run e2e:install`. |
+| `npm run build` / `npm start` | Production build / serve it with the sync server on port 8080 |
 | `npm run lint`, `npm run typecheck` | Static checks |
 
 To use it on a tablet, the app must be reachable over **HTTPS** (see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md)).
-
-## Cloud sync (optional)
-
-Without configuration the app is fully functional and stores drawings in the browser (IndexedDB).
-To sync across devices:
-
-1. Create a Supabase project.
-2. Apply the schema. Either:
-   - paste `supabase/migrations/20260924000000_drawings.sql` into the SQL editor and run it, or
-   - run `supabase link` then `supabase db push`.
-3. Copy `.env.example` to `.env.local` and fill in `VITE_SUPABASE_URL` and
-   `VITE_SUPABASE_PUBLISHABLE_KEY` (Project Settings → API).
-4. Create your account. Either:
-   - in the Supabase dashboard: Authentication → Users → Add user (email + password, auto-confirm), or
-   - temporarily set `VITE_ALLOW_SIGNUP=true` so the sign-in form offers "Create an account
-     instead", then remove it again.
-
-   Then **turn off "Allow new users to sign up"** in Auth settings. The data is protected by
-   row-level security either way (plus a per-user row quota), but there is no reason to leave
-   sign-ups open.
-5. Optional: in Realtime settings, disable "Allow public access". The live-preview channel is
-   private and authorized per user.
-
-Sign-in is email + password. Magic links are deliberately not used: on iOS, a Home Screen app has
-storage that is isolated from Safari, so a link opened in Safari cannot sign the app in.
-Signing out only signs out this device and keeps the drawings stored on it.
-
-### Testing sync without a Supabase account
-
-The Supabase CLI (a dev dependency) runs the real Supabase services locally in Docker: Postgres,
-Auth, the REST API and Realtime. No account or cloud project is needed, only Docker.
-
-```bash
-npm run supabase:start   # first run downloads the Supabase images; applies supabase/migrations
-npm run e2e:supabase     # two browser "devices" of one user + a second account, against the local stack
-npm run supabase:stop    # stop it when done (it listens on all network interfaces with default keys)
-```
-
-The tests create and delete their own users. They cover two-device sync, live previews, the
-offline queue, conflicting edits, lost responses, per-device sign-out, and what another account
-can and cannot reach.
-
-To try the app itself against the local stack:
-
-1. Put the Project URL and publishable key printed by `npx supabase status` into `.env.local`, plus
-   `VITE_ALLOW_SIGNUP=true`.
-2. Restart `npm run dev`.
-3. Create an account in the sign-in form. Local sign-ups need no email confirmation.
-
-Replace those values before pointing the app at a real project.
 
 ## Documentation
 

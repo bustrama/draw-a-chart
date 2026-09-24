@@ -1,6 +1,6 @@
 import { chartKeyString, type ChartKey } from '../drawing/model';
 import { uuid } from '../lib/ids';
-import type { LocalDrawingDb, OutboxEntry, RemoteRow } from './localDb';
+import { SERVER_GENERATION, type LocalDrawingDb, type OutboxEntry, type RemoteRow } from './localDb';
 import type { PersistentDocuments } from './PersistentDocuments';
 import type { ChangePayload, ChangeResult, ChannelStatus, PreviewMessage, RemoteApi } from './remote';
 
@@ -49,6 +49,7 @@ export class SyncEngine {
   private unsubscribeChanges: (() => void) | null = null;
   private previews: { send(m: PreviewMessage): void; readonly ready: boolean; close(): void } | null = null;
   private activeChart: ChartKey | null = null;
+  private generationCheck: Promise<void> | null = null;
   private status: SyncStatus;
   private readonly listeners = new Set<() => void>();
   readonly deviceId = uuid();
@@ -86,7 +87,7 @@ export class SyncEngine {
     return this.userId;
   }
 
-  /** Whether live previews can be sent right now (signed in and the channel is joined). */
+  /** Whether live previews can be sent right now (user known and the live connection open). */
   get previewsReady(): boolean {
     return this.previews?.ready === true;
   }
@@ -184,6 +185,7 @@ export class SyncEngine {
     let lastInvalid = '';
     let sent = 0;
     try {
+      await this.ensureGeneration();
       for (let round = 0; round < 100; round++) {
         await this.docs.flushWrites();
         const batch = (await this.db.pendingFor(user, BATCH)).filter((e) => !this.inFlight.has(e.id));
@@ -232,6 +234,7 @@ export class SyncEngine {
     if (!remote || !user) return;
     const cursorKey = `cursor:${user}:${chartKeyString(key)}`;
     try {
+      await this.ensureGeneration();
       let cursor = (await this.db.getMeta<string>(cursorKey)) ?? null;
       let since = cursor ? new Date(Date.parse(cursor) - PULL_OVERLAP_MS).toISOString() : null;
       for (let page = 0; page < 100; page++) {
@@ -269,6 +272,31 @@ export class SyncEngine {
     } else if (this.userId) {
       this.patch({ state: this.env.isOnline() ? 'connecting' : 'offline' });
     }
+  }
+
+  // ---- server generation -----------------------------------------------------------------------
+
+  /**
+   * Before talking to the server: if its database is not the one this device last synced with
+   * (restored from a backup, or replaced), requeue everything this device has (see
+   * LocalDrawingDb.resetForServer). Memoized so concurrent flush and pull reset only once.
+   */
+  private ensureGeneration(): Promise<void> {
+    this.generationCheck ??= this.checkGeneration().finally(() => (this.generationCheck = null));
+    return this.generationCheck;
+  }
+
+  private async checkGeneration(): Promise<void> {
+    const generation = this.remote?.generation;
+    if (!generation || !this.userId) return; // not heard from the server yet
+    const known = await this.db.getMeta<string>(SERVER_GENERATION);
+    if (known === generation) return;
+    if (known === undefined) {
+      await this.db.setMeta(SERVER_GENERATION, generation); // first contact: nothing to reset
+      return;
+    }
+    await this.db.resetForServer(generation, this.userId);
+    await this.refreshPending();
   }
 
   // ---- lifecycle -------------------------------------------------------------------------------

@@ -111,7 +111,7 @@ test.describe('drawing operations', () => {
     await openApp(page);
     for (const [button, panel] of [
       ['screenshot-button', 'screenshot-panel'],
-      ['account-button', 'account-panel'],
+      ['sync-button', 'sync-panel'],
       ['palette-toggle', 'palette'],
     ] as const) {
       await page.getByTestId(button).click();

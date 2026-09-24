@@ -28,4 +28,9 @@ export default defineConfig([
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
     rules: { 'react-hooks/rules-of-hooks': 'off' },
   },
+  {
+    files: ['server/**/*.ts'],
+    languageOptions: { globals: globals.node },
+    rules: { 'react-hooks/rules-of-hooks': 'off', 'react-refresh/only-export-components': 'off' },
+  },
 ]);

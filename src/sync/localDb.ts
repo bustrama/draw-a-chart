@@ -3,6 +3,7 @@ import { uuid } from '../lib/ids';
 import { chartKeyString, parseDrawing, type ChartKey, type Drawing, type DrawingKind } from '../drawing/model';
 import type { Mutation } from '../drawing/store';
 import type { TimeframeId } from '../market/types';
+import type { RemoteRow } from './protocol';
 
 /** Local copy of a drawing (or its tombstone) plus sync metadata. */
 export interface StoredDrawing {
@@ -30,7 +31,7 @@ export interface OutboxEntry {
   readonly drawing: Drawing | null;
   readonly deleted: boolean;
   readonly queuedAt: number;
-  /** Signed-in user who made the change; null = made while signed out (adopted on sign-in). */
+  /** User the change was made for; null = before the server said who this device is (adopted then). */
   readonly owner: string | null;
   /** Whether `opId` has been sent at least once (its response may have been lost). */
   readonly sent: boolean;
@@ -41,18 +42,8 @@ export interface OutboxEntry {
   readonly prevOpIds: readonly string[];
 }
 
-/** A server row as it arrives from Supabase (RPC result, pull, or realtime). */
-export interface RemoteRow {
-  readonly id: string;
-  readonly provider: string;
-  readonly symbol: string;
-  readonly timeframe: string;
-  readonly kind: string;
-  readonly data: unknown;
-  readonly deleted: boolean;
-  readonly rev: number;
-  readonly updated_at: string;
-}
+/** A server row as it arrives from the sync server (write result, pull, or live push). */
+export type { RemoteRow } from './protocol';
 
 export type AckStatus = 'applied' | 'duplicate' | 'conflict' | 'rejected' | 'invalid';
 
@@ -63,6 +54,8 @@ interface Schema extends DBSchema {
 }
 
 export const DB_NAME = 'draw-a-chart';
+/** Meta key: the server database generation this device last synced with. */
+export const SERVER_GENERATION = 'server-generation';
 const DB_VERSION = 1;
 const MAX_PREV_OP_IDS = 8;
 
@@ -267,6 +260,58 @@ export class LocalDrawingDb {
     }
     await tx.done;
     return changes;
+  }
+
+  /**
+   * The server was restored from a backup or replaced (its generation changed): what this device
+   * knows about server revisions and pull cursors no longer holds. Every drawing it has is queued
+   * again as new (base revision 0). Where the server has a version, that version wins (a conflict,
+   * which this device adopts); drawings the server lost are uploaded again. Tombstones are dropped,
+   * so the server's state decides. Records the new generation in the same transaction and returns
+   * the number of drawings queued.
+   */
+  async resetForServer(generation: string, owner: string | null): Promise<number> {
+    const db = await this.dbPromise;
+    const tx = db.transaction(['drawings', 'outbox', 'meta'], 'readwrite');
+    const drawings = tx.objectStore('drawings');
+    const outbox = tx.objectStore('outbox');
+    const meta = tx.objectStore('meta');
+    const now = Date.now();
+    let queued = 0;
+    let cursor = await drawings.openCursor();
+    while (cursor) {
+      const rec = cursor.value;
+      const pending = await outbox.get(rec.id);
+      if (rec.deleted || !rec.drawing) {
+        await cursor.delete();
+        if (pending) await outbox.delete(rec.id);
+      } else {
+        await cursor.update({ ...rec, rev: 0 });
+        const [provider, symbol, timeframe] = rec.chart.split(':');
+        await outbox.put({
+          id: rec.id,
+          chart: rec.chart,
+          key: { provider, symbol, timeframe: timeframe as TimeframeId },
+          kind: rec.drawing.kind,
+          opId: uuid(),
+          baseRev: 0,
+          drawing: rec.drawing,
+          deleted: false,
+          queuedAt: pending?.queuedAt ?? now,
+          owner: pending?.owner ?? owner,
+          sent: false,
+          prevOpIds: [],
+        });
+        queued++;
+      }
+      cursor = await cursor.continue();
+    }
+    for (const key of await meta.getAllKeys()) {
+      if (String(key).startsWith('cursor:')) await meta.delete(key); // they point into the old history
+    }
+    await meta.put(generation, SERVER_GENERATION);
+    await tx.done;
+    return queued;
   }
 
   async getMeta<T>(key: string): Promise<T | undefined> {

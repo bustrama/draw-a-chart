@@ -1,0 +1,22 @@
+# Build context: only what the image needs (sources, configs, public assets).
+node_modules
+dist
+dev-dist
+.data
+data
+test-results
+playwright-report
+blob-report
+coverage
+.git
+.claude
+.env
+.env.*
+docs
+e2e
+**/*.test.ts
+**/testing
+*.log
+Dockerfile
+docker-compose.yml
+.dockerignore

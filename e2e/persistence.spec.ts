@@ -12,7 +12,7 @@ test.describe('local persistence', () => {
     const before = await drawings(page);
     expect(before).toHaveLength(2);
     // Local writes are asynchronous; wait until both are durably queued.
-    await expect(page.getByTestId('account-button')).toHaveAttribute('data-sync-state', 'local-only');
+    await expect(page.getByTestId('sync-button')).toHaveAttribute('data-sync-state', 'local-only');
     await expect
       .poll(() => page.evaluate(() => (window as never as { __dacRuntime: { sync: { getStatus(): { pending: number } } } }).__dacRuntime.sync.getStatus().pending))
       .toBe(2);

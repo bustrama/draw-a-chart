@@ -7,10 +7,11 @@ hardware before it can be called verified. Record results in the table at the en
 
 ## 0. Setup
 
-1. Serve over **HTTPS** on the LAN (service workers, clipboard, `crypto.randomUUID` and installation all
-   require a secure context; plain `http://<lan-ip>` only works for basic drawing):
-   - Easiest: deploy the production build anywhere with HTTPS (e.g. `npm run build`, upload `dist/`), or
-   - Use a tunnel (e.g. `cloudflared tunnel --url http://localhost:5173`) to `npm run dev`.
+1. Serve over **HTTPS** (service workers, clipboard and installation all require a secure
+   context; plain `http://<lan-ip>` works for drawing and sync, but not for installing):
+   - The intended setup: the Docker container on your server behind a Cloudflare Tunnel (README,
+     "Self-hosting"), optionally protected by Cloudflare Access; or
+   - a quick tunnel to the dev server (`cloudflared tunnel --url http://localhost:5173`).
 2. Test twice where noted: **in the browser** and **installed** (iPad: Share → Add to Home Screen;
    Galaxy: Chrome/Samsung Internet menu → Install app / Add to Home screen).
 3. iPad: Settings → Apple Pencil → note whether **Scribble** is on (test both states for section 2).
@@ -83,10 +84,14 @@ hardware before it can be called verified. Record results in the table at the en
 | 6.2 | Camera → Share | Share sheet with the PNG (iPad: Save Image / Copy / Files) |
 | 6.3 | Camera → Download (Android / desktop) | PNG saved |
 | 6.4 | Draw, close the app completely, reopen | Drawings restored |
-| 6.5 | Airplane mode, draw, disable airplane mode | Pending count goes to 0 (when signed in) |
-| 6.6 | Two devices signed in, draw on one | Appears on the other within a second or two (live preview while drawing) |
-| 6.7 | Installed PWA: new version deployed | "A new version is available" prompt; never auto-reloads mid-stroke |
-| 6.8 | Sign out on one device | That device only; the other stays signed in and keeps syncing; local drawings remain on the signed-out device |
+| 6.5 | Airplane mode, draw, disable airplane mode | The sync button shows a pending count while offline; it goes to 0 and the drawing appears on the other devices |
+| 6.6 | Two devices open the app, draw on one | Appears on the other within a second or two, with a live preview while drawing. No sign-in anywhere |
+| 6.7 | Installed PWA: new version deployed (`docker compose up -d --build`) | "A new version is available" prompt; never auto-reloads mid-stroke |
+| 6.8 | Leave the app open on the iPad for 10+ minutes idle, then draw on another device | Still arrives live (the connection survives Cloudflare's idle timeout) |
+| 6.9 | With Cloudflare Access: let the Access session expire (or revoke it), then draw — in the browser and in the installed app | The sync panel offers **Sign in again**; it leads through the Access login back into the app, syncing resumes, and nothing drawn meanwhile is lost |
+| 6.10 | Installed PWA behind Cloudflare Access | Installation works (manifest loads); the installed app starts offline |
+| 6.11 | `docker compose restart` while two devices are open | Both reconnect by themselves within ~30 s; drawings made meanwhile arrive |
+| 6.12 | Restore a backup (README) while devices hold newer drawings, then open the app on them | The backup's drawings are back; drawings created after the backup reappear once each device that has them reconnects |
 
 ## 7. Orientation and layout
 
@@ -94,7 +99,7 @@ hardware before it can be called verified. Record results in the table at the en
 |---|---|---|
 | 7.1 | Landscape ↔ portrait | Tool rail moves left ↔ bottom; chart resizes; drawings stay anchored |
 | 7.2 | Installed PWA on iPad with notch/rounded corners | Nothing hidden under system UI (safe areas) |
-| 7.3 | iPad Slide Over / narrow Split View | Top bar and tool rail scroll horizontally; palette, screenshot and account panels stay fully on screen |
+| 7.3 | iPad Slide Over / narrow Split View | Top bar and tool rail scroll horizontally; palette, screenshot and sync panels stay fully on screen |
 
 ## Results log
 

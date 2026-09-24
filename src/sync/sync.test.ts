@@ -412,3 +412,72 @@ describe('synchronization between devices', () => {
     expect(received).toEqual(['b:s1']);
   });
 });
+
+describe('a server that was restored from a backup or replaced (new generation)', () => {
+  it('gets back every drawing a device still has when its database was replaced', async () => {
+    const backend = new FakeBackend();
+    const a = device(backend);
+    const doc = a.docs.open(KEY);
+    a.sync.setUser(USER);
+    a.sync.setActiveChart(KEY);
+    await a.docs.whenLoaded(KEY);
+    doc.commit('draw', [{ op: 'put', drawing: line('kept') }]);
+    doc.commit('draw', [{ op: 'put', drawing: line('erased') }]);
+    await settleSync(a);
+    doc.commit('erase', [{ op: 'delete', id: 'erased' }]);
+    await settleSync(a);
+    expect(backend.rows.get('kept')?.rev).toBe(1);
+
+    backend.replace(); // e.g. the server's volume was lost: an empty database
+    await settleSync(a);
+    expect(backend.rows.get('kept')).toMatchObject({ rev: 1, deleted: false, data: line('kept') });
+    expect(backend.rows.has('erased')).toBe(false); // a deletion is not resurrected
+    expect(doc.store.all().map((d) => d.id)).toEqual(['kept']);
+    expect(a.sync.getStatus()).toMatchObject({ state: 'synced', pending: 0 });
+  });
+
+  it("after a restore, the backup's versions win and drawings it lacks come back from the device", async () => {
+    const backend = new FakeBackend();
+    const a = device(backend);
+    const b = device(backend);
+    const docA = a.docs.open(KEY);
+    a.sync.setUser(USER);
+    a.sync.setActiveChart(KEY);
+    await a.docs.whenLoaded(KEY);
+    docA.commit('draw', [{ op: 'put', drawing: line('old') }]);
+    await settleSync(a);
+    const backup = backend.snapshot();
+    docA.commit('move', [{ op: 'put', drawing: line('old', 7777) }]); // after the backup
+    docA.commit('draw', [{ op: 'put', drawing: line('new') }]); // after the backup
+    await settleSync(a);
+    expect(backend.rows.get('old')?.rev).toBe(2);
+
+    backend.restore(backup);
+    await settleSync(a);
+    expect(docA.store.get('old')).toEqual(line('old')); // the backup's version
+    expect(backend.rows.get('old')).toMatchObject({ rev: 1 });
+    expect(backend.rows.get('new')).toMatchObject({ rev: 1, data: line('new') }); // uploaded again
+    expect(a.sync.getStatus()).toMatchObject({ state: 'synced', pending: 0, error: null });
+
+    // A device that joins now sees exactly the restored + recovered state.
+    const docB = b.docs.open(KEY);
+    b.sync.setUser(USER);
+    b.sync.setActiveChart(KEY);
+    await settleSync(b);
+    expect(docB.store.all().map((d) => d.id).sort()).toEqual(['new', 'old']);
+    expect(docB.store.get('old')).toEqual(line('old'));
+  });
+
+  it('records the generation on first contact without resetting anything', async () => {
+    const backend = new FakeBackend();
+    const a = device(backend);
+    const doc = a.docs.open(KEY);
+    await a.docs.whenLoaded(KEY);
+    doc.commit('draw', [{ op: 'put', drawing: line('local') }]); // before ever syncing
+    await a.docs.flushWrites();
+    a.sync.setUser(USER);
+    await settleSync(a);
+    expect(backend.rows.get('local')?.rev).toBe(1);
+    expect(await a.db.getMeta('server-generation')).toBe(backend.generation);
+  });
+});

@@ -14,26 +14,77 @@ Resume here in a new session. Newest notes at the top of each section.
 | 6 | Playwright E2E: anchoring, input routing, cancel cleanup, gestures, market data via mocked Binance | ✅ done |
 | 7 | Local persistence (IndexedDB, outbox) | ✅ done |
 | 8 | Screenshot (copy/share/download) | ✅ done |
-| 9 | Supabase auth + sync + live previews (SQL on PGlite; engine vs FakeBackend; the real app vs a **local** Supabase stack) | ✅ done, **not yet run against a hosted Supabase project** |
+| 9 | Sync across devices + live previews through a self-hosted server (SQLite + WebSocket; no accounts yet, auth-ready). Replaced the Supabase version (first commit) | ✅ done, **not yet run behind the real Cloudflare Tunnel/Access** |
 | 10 | PWA (manifest, icons, SW with update prompt) | ✅ done |
 | 11 | WebKit (iPad-like) browser tests | ✅ done |
 | 12 | Final verification + independent review | ✅ done (21 review findings fixed, 15 with a regression test) |
 | 13 | Physical device testing (iPad + Apple Pencil, Galaxy Tab + S Pen) | ❌ not possible here — see `DEVICE_TESTING.md` |
+| 14 | Self-hosting: Dockerfile, docker-compose, online backup/restore | ✅ done (image built and smoke-tested with Docker Desktop; not yet on your server) |
 
 ## Verification snapshot (2026-09-24, final)
 
 - `npm run lint` clean · `npm run typecheck` clean · `npm run build` OK
-- Unit: 115 tests (15 files), including 10 SQL tests of the migration on real Postgres (PGlite)
-- Browser: 39 tests. 36 Chromium (CDP trusted pen/touch), 2 WebKit iPad-like, 1 PWA production build
-- Live sync: 8 tests (`npm run e2e:supabase`) against a local Supabase stack (CLI 2.106.0, Docker);
-  24/24 passed over 3 repeated runs
+- Unit: 148 tests (19 files), including the sync server (store, API, WebSocket, static files,
+  backup, restore, hostile input) and the client against a real in-process server
+- Browser: 48 tests:
+  - 36 Chromium (CDP trusted pen/touch);
+  - 2 WebKit iPad-like;
+  - 1 PWA against the production server;
+  - 9 multi-device sync (27/27 over 3 repeated runs).
+- Docker: the image builds (60 MB). A container smoke test passed: health, app and manifest, API,
+  non-root user, data kept across a restart, 0.3 s graceful stop. The README's compose backup and
+  restore commands (`server/restore.ts`) were run for real: backed-up state restored, file owned
+  by `node`, new generation, container healthy.
 - Visual capture (`e2e/visual.capture.ts`) reviewed at iPad landscape/portrait, desktop and Slide Over (320 px)
 - Perf probe (`e2e/perf.capture.ts`, headless desktop Chromium, 287 visible drawings while panning):
   drawing-layer paint median 0.3 ms, frame gap median 16.7 ms
-- Not verified: anything on a physical iPad/Galaxy tablet; a hosted Supabase project
+- Not verified: anything on a physical iPad/Galaxy tablet; the real Cloudflare Tunnel/Access setup
 
 ## Log
 
+- 2026-09-24 (self-hosted): Supabase replaced by a self-hosted sync server, for one user, no
+  accounts, running on your own server behind Cloudflare Zero Trust. The Supabase version is the
+  first commit in Git.
+  - `server/`: Node 24 runs the TypeScript directly. It stores drawings in SQLite (`node:sqlite`),
+    keeps the same compare-and-swap semantics as the SQL function, and has one WebSocket for live
+    rows and previews. It also serves `dist/`, so there is one origin.
+  - `identify()` is the single place where auth will plug in, and every row keeps an owner.
+  - Client: `ServerRemote` + `SyncSession` replace the Supabase remote and `AuthStore`. The sync
+    engine, outbox and conflict handling are unchanged.
+  - For Cloudflare: the manifest is requested with credentials, Access login redirects are
+    detected, and a heartbeat keeps WebSockets open.
+  - `npm run dev` embeds the same API (Vite plugin). Docker: multi-stage image (60 MB) and a
+    compose file with a named volume. `server/backup.ts` makes online backups, and README
+    documents the restore.
+  - Tests:
+    - server unit tests: store, API, WebSocket, static files, backup;
+    - the client against a real in-process server: restart and reconnect, proxy redirects, two
+      full devices;
+    - Playwright `sync` project against the production server;
+    - a Docker smoke test.
+  - Removed: Supabase client and CLI, the SQL migration and its PGlite tests, the live Supabase
+    tests, the sign-in UI, and the unused `happy-dom`.
+  - Found by running the documented Docker restore: `docker compose cp` creates root-owned files,
+    so moving the backup into place left a database the `node` user could not write, and the
+    server crash-looped. `server/restore.ts` now puts it in place as the server's user.
+  - An independent review found 10 issues. All are fixed except two, which are documented (a
+    `Host` allowlist, and closing live connections when future credentials expire).
+    - **One request could crash the server:** a deeply nested preview (re-serialized), a
+      malformed upgrade URL, or an exception in `identify()`. Previews are now rebuilt from
+      checked fields, and every upgrade path is guarded.
+    - **Behind Cloudflare Access, the installed app could never log in again:** the service
+      worker answered every reload from cache. "Sign in again" now goes through `/api/login`,
+      which the service worker never intercepts.
+    - **Hitting the quota froze all sync:** it failed the whole batch and counted tombstones. It
+      is now checked per new drawing, for live drawings only.
+    - **A restored or rebuilt server silently desynchronized devices:** the database now has a
+      generation, and devices requeue everything when it changes. The fix also includes
+      `synchronous = full`, a writability check at startup and in `/api/health`, and
+      `server/restore.ts`.
+    - **Smaller fixes:** request, connect and resume-staleness timeouts on the client; an Origin
+      check on the live connection; async `identify()`.
+    - **Docs corrected:** adding auth later does need one data step (re-owning the `local` rows);
+      publishing the port bypasses Access; the health check follows `PORT`.
 - 2026-09-24 (live sync): Sync tested without a Supabase account. The Supabase CLI (dev
   dependency) runs Postgres, Auth, PostgREST and Realtime locally in Docker, and
   `e2e/sync.supabase.ts` drives the real app in two browser profiles plus Node-side clients.
@@ -108,10 +159,12 @@ Resume here in a new session. Newest notes at the top of each section.
 
 - Device testing on iPad + Galaxy Tab per `DEVICE_TESTING.md`; tune `PALM`, `NAV`, `QUICKSHAPE`,
   `HANDWRITING` constants from the results.
-- Configure a hosted Supabase project (README) and run the sync checks in `DEVICE_TESTING.md` §6.
-  The same logic already passes against a local stack (`npm run e2e:supabase`).
-- The project folder is not a Git repository yet. Run `git init` before the next change so work
-  can be checkpointed.
+- Deploy on your server (`docker compose up -d --build`) behind the Cloudflare Tunnel, then run
+  the sync checks in `DEVICE_TESTING.md` §6 (Access session expiry, idle connections, restarts).
+- Accounts, when needed: implement `identify()` (e.g. verify the Cloudflare Access JWT), a
+  sign-in state in the UI, re-owning the `local` rows, and closing live connections when
+  credentials expire (ARCHITECTURE §7, "Identity, and auth later").
+- Optional hardening: a `Host` allowlist against DNS rebinding on the LAN.
 - Candidates (not started): cross-timeframe drawing display, rectangle/ellipse QuickShape,
   partial eraser, local-timezone axis, log price scale (needs a log `PriceMapping`), converting a
   selection between note/ink.

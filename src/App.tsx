@@ -3,8 +3,8 @@ import { createRuntime, type Runtime } from './app/runtime';
 import { exposeTestHooks, loadMarket, saveMarket } from './app/runtimeConfig';
 import type { MarketSelection, Workspace } from './app/Workspace';
 import type { EngineState } from './drawing/DrawingEngine';
-import { AccountButton } from './ui/AccountButton';
 import { ScreenshotButton } from './ui/ScreenshotButton';
+import { SyncButton } from './ui/SyncButton';
 import { Toolbar } from './ui/Toolbar';
 import { TopBar } from './ui/TopBar';
 import { UpdatePrompt } from './ui/UpdatePrompt';
@@ -84,7 +84,7 @@ export default function App() {
         right={
           <>
             <ScreenshotButton workspace={workspace} />
-            <AccountButton auth={runtime?.auth ?? null} sync={runtime?.sync ?? null} />
+            <SyncButton sync={runtime?.sync ?? null} session={runtime?.session ?? null} />
           </>
         }
       />

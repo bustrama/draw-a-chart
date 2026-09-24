@@ -98,7 +98,7 @@ export function quantizePx(v: number): number {
 const HEX_COLOR = /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/;
 
 /**
- * Validates untrusted drawing data (IndexedDB, Supabase rows, realtime payloads).
+ * Validates untrusted drawing data (IndexedDB, sync server rows, live payloads).
  * Returns null instead of throwing so one corrupt row cannot break rendering.
  */
 export function parseDrawing(value: unknown): Drawing | null {

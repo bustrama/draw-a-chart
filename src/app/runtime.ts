@@ -2,19 +2,20 @@ import { MemoryDocumentSource, type DocumentSource } from '../drawing/documents'
 import type { StrokeProgress } from '../drawing/DrawingEngine';
 import { chartKeyString } from '../drawing/model';
 import type { MarketDataProvider } from '../market/types';
-import { AuthStore } from '../sync/auth';
 import { LocalDrawingDb } from '../sync/localDb';
 import { PersistentDocuments } from '../sync/PersistentDocuments';
-import { createSupabase, readSupabaseConfig, SupabaseRemote } from '../sync/supabaseRemote';
+import { ServerRemote } from '../sync/serverRemote';
+import { SyncSession } from '../sync/session';
 import { SyncEngine } from '../sync/SyncEngine';
-import { createProvider } from './runtimeConfig';
+import { createProvider, readSyncServer } from './runtimeConfig';
 import { Workspace, type MarketSelection } from './Workspace';
 
 export interface Runtime {
   readonly provider: MarketDataProvider;
   readonly workspace: Workspace;
   readonly sync: SyncEngine | null;
-  readonly auth: AuthStore;
+  /** Identity on the sync server; null when sync is off. */
+  readonly session: SyncSession | null;
   dispose(): void;
 }
 
@@ -23,14 +24,14 @@ const PREVIEW_MAX_POINTS = 400;
 
 /**
  * Builds the whole app runtime around a chart host element:
- * market data provider, local-first drawing persistence (IndexedDB), optional Supabase
- * sync/auth, live stroke previews, and the chart workspace.
+ * market data provider, local-first drawing persistence (IndexedDB), sync with the self-hosted
+ * server (unless turned off), live stroke previews, and the chart workspace.
  */
 export function createRuntime(host: HTMLElement, market: MarketSelection): Runtime {
   const provider = createProvider();
-  const supabaseConfig = readSupabaseConfig();
-  const client = supabaseConfig ? createSupabase(supabaseConfig) : null;
-  const auth = new AuthStore(client);
+  const syncServer = readSyncServer();
+  const remote = syncServer === null ? null : new ServerRemote(syncServer);
+  const session = remote ? new SyncSession(remote) : null;
 
   let workspace: Workspace | null = null;
   let db: LocalDrawingDb | null = null;
@@ -52,7 +53,7 @@ export function createRuntime(host: HTMLElement, market: MarketSelection): Runti
     sync = new SyncEngine(
       db,
       persistent,
-      client ? new SupabaseRemote(client) : null,
+      remote,
       { isOnline: () => navigator.onLine, windowEvents: window, documentEvents: document },
       {
         onPreview: (m) => {
@@ -109,9 +110,13 @@ export function createRuntime(host: HTMLElement, market: MarketSelection): Runti
   });
   const ws = workspace;
 
-  const applyUser = () => sync?.setUser(auth.getState().user?.id ?? null);
-  const unsubscribeAuth = auth.subscribe(applyUser);
+  // Every device of the (single, for now) user syncs as soon as the server says who it is.
+  const applyUser = () => sync?.setUser(session?.getState().userId ?? null);
+  const unsubscribeSession = session?.subscribe(applyUser);
   applyUser();
+  session?.start();
+  const refreshSession = () => session?.refresh();
+  window.addEventListener('online', refreshSession);
 
   let lastChart = '';
   const onWorkspace = () => {
@@ -128,22 +133,19 @@ export function createRuntime(host: HTMLElement, market: MarketSelection): Runti
     provider,
     workspace: ws,
     sync,
-    auth,
+    session,
     dispose() {
       if (trailing) clearTimeout(trailing);
-      unsubscribeAuth();
+      window.removeEventListener('online', refreshSession);
+      unsubscribeSession?.();
       unsubscribeWorkspace();
       ws.dispose();
       provider.dispose?.();
       sync?.dispose();
       persistent?.dispose();
-      auth.dispose();
+      session?.dispose();
+      remote?.dispose();
       void db?.close();
-      if (client) {
-        void client.removeAllChannels();
-        // A disposed runtime's client must not keep refreshing the session in the background.
-        void client.auth.stopAutoRefresh();
-      }
     },
   };
 }

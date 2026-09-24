@@ -7,15 +7,18 @@ interface Row extends RemoteRow {
   readonly last_op_id: string;
 }
 
-/** Same limit as the SQL check constraint (octet_length(data::text) < 262144). */
+/** Same limit as the server (server/validate.ts LIMITS.maxDataBytes). */
 const MAX_DATA_BYTES = 262_144;
 
 /**
- * In-memory stand-in for the Supabase backend with the same semantics as
- * `apply_drawing_changes` (see the SQL migration and its PGlite test).
+ * In-memory stand-in for the sync server with the same write semantics as server/store.ts, plus
+ * failure injection (network down, lost responses, requests held in flight).
  */
 export class FakeBackend {
   readonly rows = new Map<string, Row>();
+  /** The database generation (changes on replace/restore, like server/restore.ts). */
+  generation = 'gen-1';
+  private generations = 1;
   /** Next N applyChanges calls fail before touching data (network down). */
   failCalls = 0;
   /** Next N applyChanges calls apply the changes but the response is lost. */
@@ -27,8 +30,29 @@ export class FakeBackend {
   private readonly changeSubs = new Set<{ userId: string; onRow(row: RemoteRow): void }>();
   private readonly previewSubs = new Set<{ userId: string; onMessage(m: PreviewMessage): void }>();
 
+  /** A new, empty database (e.g. the server's volume was lost). */
+  replace(): void {
+    this.rows.clear();
+    this.generation = `gen-${++this.generations}`;
+  }
+
+  snapshot(): Map<string, Row> {
+    return new Map(this.rows);
+  }
+
+  /** Back to a snapshot, as server/restore.ts does with a backup: new generation. */
+  restore(snapshot: Map<string, Row>): void {
+    this.rows.clear();
+    for (const [id, row] of snapshot) this.rows.set(id, row);
+    this.generation = `gen-${++this.generations}`;
+  }
+
   api(userId: string): RemoteApi {
+    const currentGeneration = () => this.generation;
     return {
+      get generation() {
+        return currentGeneration();
+      },
       applyChanges: async (changes) => {
         if (this.gate) await this.gate;
         return this.applyChanges(userId, changes);

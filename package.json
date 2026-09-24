@@ -6,7 +6,7 @@
   "description": "Stylus-first financial charting PWA for Wyckoff study: pen draws, fingers navigate.",
   "scripts": {
     "dev": "vite",
-    "dev:lan": "vite --mode lan",
+    "start": "node server/main.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
@@ -14,27 +14,19 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test",
-    "e2e:install": "playwright install chromium webkit",
-    "e2e:supabase": "playwright test --config e2e/supabase.config.ts",
-    "supabase:start": "supabase start",
-    "supabase:stop": "supabase stop"
+    "e2e:install": "playwright install chromium webkit"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.117.1",
-    "idb": "^8.0.3",
-    "lightweight-charts": "^5.2.1",
-    "perfect-freehand": "^1.2.3",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.8",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.6.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.1",
     "@vite-pwa/assets-generator": "^1.0.4",
     "@vitejs/plugin-react": "^6.1.1",
     "eslint": "^10.11.0",
@@ -42,8 +34,11 @@
     "eslint-plugin-react-refresh": "^0.5.7",
     "fake-indexeddb": "^6.2.5",
     "globals": "^17.12.0",
-    "happy-dom": "^20.14.5",
-    "supabase": "2.106.0",
+    "idb": "^8.0.3",
+    "lightweight-charts": "^5.2.1",
+    "perfect-freehand": "^1.2.3",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.70.1",

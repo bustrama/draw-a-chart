@@ -11,6 +11,7 @@ export default defineConfig({
     command: 'npx vite --port 5174 --strictPort',
     cwd: '..',
     url: 'http://localhost:5174',
+    env: { VITE_SYNC_SERVER: 'off', SYNC_DEV_DB: ':memory:' },
     reuseExistingServer: true,
     timeout: 90_000,
   },
