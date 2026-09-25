@@ -1,4 +1,5 @@
-import type { CandleRequest, Candle, LiveCandleListener, MarketDataProvider, SymbolInfo, TimeframeId } from '../types';
+import { clockFor, getTimeframe } from '../timeframes';
+import type { CandleRequest, Candle, LiveCandleListener, MarketDataProvider, PreparedChart, SymbolInfo, TimeframeId } from '../types';
 import { klineStreamName, parseStreamKline } from './normalize';
 import { BinanceRestClient, type RestClientOptions } from './rest';
 import { BinanceStreamClient, type StreamClientOptions } from './stream';
@@ -26,6 +27,11 @@ export interface BinanceProviderOptions {
   readonly stream?: Partial<StreamClientOptions>;
 }
 
+/** Known pairs, else a pair with two decimals (the server provider knows every pair's tick size). */
+export function binanceSymbolInfo(symbol: string): SymbolInfo {
+  return SYMBOLS.find((s) => s.symbol === symbol) ?? { symbol, base: symbol, quote: '', pricePrecision: 2, minMove: 0.01 };
+}
+
 /** Binance Spot public market data (no keys, no trading). */
 export class BinanceProvider implements MarketDataProvider {
   readonly id = 'binance';
@@ -46,6 +52,10 @@ export class BinanceProvider implements MarketDataProvider {
 
   symbols(): readonly SymbolInfo[] {
     return SYMBOLS;
+  }
+
+  async prepare(symbol: string, timeframe: TimeframeId): Promise<PreparedChart> {
+    return { info: binanceSymbolInfo(symbol), clock: clockFor(getTimeframe(timeframe)) };
   }
 
   fetchCandles(req: CandleRequest): Promise<Candle[]> {

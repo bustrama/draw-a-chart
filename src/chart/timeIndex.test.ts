@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { NEW_YORK, SessionCalendar, sessionsFromCalendar } from '../../shared/sessions.ts';
 import { TimeIndex } from './timeIndex';
 
 const H = 3_600_000;
@@ -68,5 +69,66 @@ describe('TimeIndex', () => {
     expect(() => TimeIndex.from([T0 + H, T0], H, 1)).toThrow();
     expect(Number.isNaN(TimeIndex.EMPTY.timeToLogical(T0))).toBe(true);
     expect(Number.isNaN(TimeIndex.EMPTY.logicalToTime(1))).toBe(true);
+  });
+});
+
+describe('TimeIndex with trading sessions', () => {
+  const M5 = 5 * 60_000;
+  const z = (iso: string) => Date.parse(iso);
+  // Fri 25 and Mon 28 Sep 2026, 9:30-16:00 New York (13:30-20:00Z).
+  const cal = new SessionCalendar(
+    sessionsFromCalendar(
+      [
+        { date: '2026-09-25', open: '09:30', close: '16:00' },
+        { date: '2026-09-28', open: '09:30', close: '16:00' },
+        { date: '2026-09-29', open: '09:30', close: '16:00' },
+      ],
+      NEW_YORK,
+    ),
+  );
+  const clock = cal.clock(M5);
+  const fridayClose = Array.from({ length: 6 }, (_, i) => z('2026-09-25T19:30:00Z') + i * M5); // 19:30 … 19:55
+
+  it('projects the future area onto the next session', () => {
+    const idx = TimeIndex.from(fridayClose, clock, 1);
+    expect(idx.logicalToTime(6)).toBe(z('2026-09-28T13:30:00Z')); // one bar after Friday's close: Monday's open
+    expect(idx.timeToLogical(z('2026-09-28T13:40:00Z'))).toBeCloseTo(8, 12);
+    // The weekend compresses into the space between the last bar and Monday's first.
+    expect(idx.timeToLogical(z('2026-09-26T12:00:00Z'))).toBeGreaterThan(5);
+    expect(idx.timeToLogical(z('2026-09-26T12:00:00Z'))).toBeLessThan(6);
+  });
+
+  it('keeps future-area anchors in place when the next session opens', () => {
+    const before = TimeIndex.from(fridayClose, clock, 1);
+    const monday = [z('2026-09-28T13:30:00Z'), z('2026-09-28T13:35:00Z'), z('2026-09-28T13:40:00Z')];
+    const after = TimeIndex.from([...fridayClose, ...monday], clock, 2);
+    for (const t of [z('2026-09-26T12:00:00Z'), z('2026-09-28T13:52:30Z'), z('2026-09-28T19:00:00Z'), z('2026-09-29T15:00:00Z')]) {
+      expect(after.timeToLogical(t)).toBeCloseTo(before.timeToLogical(t), 9);
+    }
+  });
+
+  it('round-trips in the future area, also past the generated bars', () => {
+    const idx = TimeIndex.from(fridayClose, clock, 1);
+    for (const l of [5.5, 6, 7.25, 100.5, 1400, 1600.75, 5000]) {
+      expect(idx.timeToLogical(idx.logicalToTime(l))).toBeCloseTo(l, 6);
+    }
+    for (const t of [z('2026-09-27T00:00:00Z'), z('2026-09-29T19:59:00Z'), z('2027-06-01T00:00:00Z')]) {
+      expect(idx.logicalToTime(idx.timeToLogical(t))).toBeCloseTo(t, 0);
+    }
+  });
+});
+
+describe('TimeIndex far into the future', () => {
+  it('keeps points thousands of bars ahead on the session bars (the table grows on demand)', async () => {
+    const { mockUsCalendar } = await import('../market/mock/MockProvider');
+    const { stepForward } = await import('../../shared/sessions.ts');
+    const clock = mockUsCalendar(2026, 2027).clock(60_000);
+    const last = Date.parse('2026-09-25T19:59:00Z'); // Friday 15:59 New York
+    const idx = TimeIndex.from([last - 60_000, last], clock, 1);
+    for (const ahead of [1400, 2000, 7000]) {
+      const t = stepForward(clock, last, ahead);
+      expect(idx.logicalToTime(1 + ahead)).toBe(t);
+      expect(idx.timeToLogical(t)).toBeCloseTo(1 + ahead, 9);
+    }
   });
 });

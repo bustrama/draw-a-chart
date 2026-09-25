@@ -18,16 +18,20 @@ Resume here in a new session. Newest notes at the top of each section.
 | 10 | PWA (manifest, icons, SW with update prompt) | ✅ done |
 | 11 | WebKit (iPad-like) browser tests | ✅ done |
 | 12 | Final verification + independent review | ✅ done (21 review findings fixed, 15 with a regression test) |
-| 13 | Physical device testing (iPad + Apple Pencil, Galaxy Tab + S Pen) | ❌ not possible here — see `DEVICE_TESTING.md` |
-| 14 | Self-hosting: Dockerfile, docker-compose, online backup/restore | ✅ done (image built and smoke-tested with Docker Desktop; not yet on your server) |
+| 13 | Physical device testing (iPad + Apple Pencil, Galaxy + S Pen) | ✅ tested by the user on an iPad Pro (Apple Pencil) and a Galaxy S26 Ultra (S Pen), 2026-09-25: "works just great". The itemized `DEVICE_TESTING.md` results were not recorded. |
+| 14 | Self-hosting: Dockerfile, docker-compose, online backup/restore | ✅ deployed (home server behind Cloudflare Tunnel + Access; image built on a PC and shipped; nightly backups) |
+| 15 | Market data: server bar cache (fetch only what is missing), US stocks and ETFs (Alpaca free plan: every exchange, 15 min delayed, regular hours), every Binance pair, symbol search, trading-session clocks (future area and gaps follow the calendar), New York time axis | ✅ done |
 
-## Verification snapshot (2026-09-24, final)
+## Verification snapshot (2026-09-25, market data)
 
 - `npm run lint` clean · `npm run typecheck` clean · `npm run build` OK
-- Unit: 148 tests (19 files), including the sync server (store, API, WebSocket, static files,
-  backup, restore, hostile input) and the client against a real in-process server
-- Browser: 48 tests:
-  - 36 Chromium (CDP trusted pen/touch);
+- Unit: 215 tests (26 files), including the sync server (store, API, WebSocket, static files,
+  backup, restore, hostile input), the client against a real in-process server, the market-data
+  server (sessions, cache, service against fake upstreams, HTTP API) and the market client
+- Market API against the live upstreams (in process and in the Docker image with a 256 MB limit:
+  about 64 MB after loading both symbol lists and the calendar)
+- Browser: 55 tests:
+  - 43 Chromium (CDP trusted pen/touch; 7 new for markets);
   - 2 WebKit iPad-like;
   - 1 PWA against the production server;
   - 9 multi-device sync (27/27 over 3 repeated runs).
@@ -42,6 +46,44 @@ Resume here in a new session. Newest notes at the top of each section.
 
 ## Log
 
+- 2026-09-25 (market data): faster data and more instruments.
+  - Data sources compared (current docs): Alpaca's free plan is the only free source of US stock
+    bars with volume from every exchange (15 minutes delayed); its real-time IEX feed saw 4.3 % of
+    AAPL's volume, useless for volume analysis. Massive/Polygon free = end of day, Finnhub free =
+    no candles, Twelve Data ≈ 5 % of the volume, Yahoo unofficial. Crypto stays on Binance.
+  - The key was verified from the PC and from the server (paper account, consolidated bars since
+    2016, the last 15 minutes refused, the delayed stream accepted) and stored in the server's
+    `.env` only.
+  - Server: `server/market/` (bar cache with coverage ranges in `market.sqlite`, Binance and
+    Alpaca clients, `/api/market/*`). Cold load of 1000 bars 1-2 s, warm 2-3 ms (measured against
+    the live APIs). Split checks purge a stock's cache.
+  - `shared/sessions.ts`: trading calendar and bar clocks for both sides. The chart's future area
+    follows the next sessions, so a target drawn after Friday's close lands on Monday's bar
+    (unit test + a browser test across a reload on Monday).
+  - App: markets registry, async chart preparation, `ServerMarketProvider` (history from the
+    server; crypto live from Binance's stream; US polled once a minute; crypto falls back to
+    Binance directly if the server is unreachable), symbol search with recent symbols, "15m
+    delayed" status, New York time axis.
+  - Found by tests while building it: the daily split check could never run again (an async
+    check that finished synchronously was registered after its own cleanup); search ranked
+    "Maui Land & Pineapple" above Apple for "apple".
+  - Changed decision: US live updates poll the server instead of Alpaca's stream (one stream
+    connection per account; same minute bars either way).
+  - Independent review: 11 findings, no critical ones; 10 fixed, each with a test where it can be
+    tested:
+    - drawings more than 1500 bars into the future lost the session calendar (the table now grows);
+    - without a market-data API at the page's origin even crypto failed (answers are now marked
+      `X-Market-Api`; anything else means "no server" and crypto falls back to Binance);
+    - US daily bars were cached 16 min after the close, without the post-market volume (final
+      after 20:00 now);
+    - the daily split check could hold every US request for a minute (now at most 2 s) and retried
+      on every request while failing (failed loads back off for 2 min, also symbol lists and the
+      calendar);
+    - thin clock-skew margins (30 s for Alpaca, 10 s for Binance, polls 35 s after the minute);
+    - an unusable cache file stopped the whole server (now replaced by an empty one);
+    - US stocks were suggested when the server has no key; `?symbol=aapl` created its own drawing
+      namespace; upstream requests followed redirects with the key headers.
+    - Documented instead: a long stretch without bars can end older history early (ARCHITECTURE §10).
 - 2026-09-25 (app icon): the installed app's icon sat in a frame. The icon generator's defaults
   (`@vite-pwa/assets-generator`, preset `minimal-2023`) put the already full-bleed tile on a white
   background with 30% padding for the maskable (Android) and Apple touch icons, and left a
@@ -56,6 +98,23 @@ Resume here in a new session. Newest notes at the top of each section.
     background-coloured corners (it fails on the old icons).
   - Not checked on a device. An already-installed app keeps the old icon until it is reinstalled
     (after accepting the update prompt, since the service worker precaches the icons).
+- 2026-09-25 (deployed): running on the home server behind Cloudflare Tunnel + Access.
+  - The server is short on RAM, so it never builds: the image is built on a PC
+    (`docker buildx build --platform linux/amd64 --provenance=false`), tagged `:latest` and
+    `:<git sha>` (a rollback is a re-tag), and shipped with `docker save | ssh … docker load`.
+  - A server-only compose override (not committed): another host port, `build: !reset null` +
+    `pull_policy: never` (a missing image fails instead of building), the data directory as a
+    bind mount owned by the container's user (uid 1000, so backups are plain files) and
+    `mem_limit: 256m`. The container uses about 30 MB.
+  - Access guards everything except the PWA files (manifest and icons), which bypass it so
+    installation works; `/api/` is never bypassed.
+  - Nightly backups with `server/backup.ts` (`docker compose exec -T`), kept 30 days. The first
+    copy passed `integrity_check` and was restored with `restore.ts` in a throwaway directory.
+  - Checked from outside: `/`, `/api/*`, the app shell and the WebSocket redirect to the Access
+    login; the PWA files answer 200 with the origin's bytes; path tricks through a bypassed file
+    (`..`, `%2e%2e`, `\`, `//`) never reach the API. On the LAN, the live connection accepts the
+    public origin (101) and refuses a foreign one (403); the tunnel keeps the Host header.
+  - Still to do: the device checks in `DEVICE_TESTING.md` §6 (6.5–6.12) through Access.
 - 2026-09-24 (self-hosted): Supabase replaced by a self-hosted sync server, for one user, no
   accounts, running on your own server behind Cloudflare Zero Trust. The Supabase version is the
   first commit in Git.
@@ -171,10 +230,14 @@ Resume here in a new session. Newest notes at the top of each section.
 
 ## Known gaps / next steps
 
+- Market data: a pre/post-market option for stocks; rescale drawings after a stock split (the
+  cache is rescaled, drawings are not; ARCHITECTURE §10); price precision for sub-dollar stocks;
+  the closing auction in the last intraday bar; real-time US data when trading starts
+  (`ALPACA_FEED=sip` on the paid plan, or a broker feed such as IBKR); indices/futures.
 - Device testing on iPad + Galaxy Tab per `DEVICE_TESTING.md`; tune `PALM`, `NAV`, `QUICKSHAPE`,
   `HANDWRITING` constants from the results.
-- Deploy on your server (`docker compose up -d --build`) behind the Cloudflare Tunnel, then run
-  the sync checks in `DEVICE_TESTING.md` §6 (Access session expiry, idle connections, restarts).
+- Deployed behind the Cloudflare Tunnel + Access (2026-09-25): run the sync checks in
+  `DEVICE_TESTING.md` §6 on the devices (Access session expiry, idle connections, restarts).
 - Accounts, when needed: implement `identify()` (e.g. verify the Cloudflare Access JWT), a
   sign-in state in the UI, re-owning the `local` rows, and closing live connections when
   credentials expire (ARCHITECTURE §7, "Identity, and auth later").

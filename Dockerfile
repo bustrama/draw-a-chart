@@ -20,8 +20,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 # Runtime dependencies only (the browser libraries are bundled into dist/).
 RUN npm ci --omit=dev && npm cache clean --force
-# The server runs as TypeScript (Node type stripping); it imports nothing from src/ at runtime.
+# The server runs as TypeScript (Node type stripping); it imports nothing from src/ at runtime
+# (types only), and shared/ holds the code it shares with the app (trading sessions).
 COPY server ./server
+COPY shared ./shared
 COPY --from=build /app/dist ./dist
 RUN rm -f server/vitePlugin.ts && mkdir -p /data && chown node:node /data
 USER node

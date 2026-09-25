@@ -13,9 +13,16 @@ services:
       # runs in this compose network and targets http://draw-a-chart:8080. Never publish on a VPS.
       - "8080:8080"
     volumes:
-      # The SQLite database (draw-a-chart.sqlite). Backup and restore: see README "Self-hosting".
+      # The SQLite databases: draw-a-chart.sqlite (drawings: back it up, see README "Self-hosting")
+      # and market.sqlite (the bar cache: safe to delete, it refills).
       - draw-a-chart-data:/data
-    # environment:
+    environment:
+      # US stocks (Alpaca; a free paper-account key works). Put both in a .env file next to this
+      # one (never commit it); without them the app has crypto only.
+      APCA_API_KEY_ID: ${APCA_API_KEY_ID:-}
+      APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:-}
+      # delayed_sip (default, free: every exchange, 15 min late), sip (real time, paid), iex.
+      ALPACA_FEED: ${ALPACA_FEED:-delayed_sip}
     #   MAX_ROWS: "100000"          # live drawings per user (a guard against runaway clients)
     #   ALLOWED_ORIGINS: ""         # only if a proxy rewrites the Host header (live connection)
 

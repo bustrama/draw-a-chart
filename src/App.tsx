@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createRuntime, type Runtime } from './app/runtime';
-import { exposeTestHooks, loadMarket, saveMarket } from './app/runtimeConfig';
+import { exposeTestHooks, loadMarket, rememberRecent, saveMarket } from './app/runtimeConfig';
 import type { MarketSelection, Workspace } from './app/Workspace';
 import type { EngineState } from './drawing/DrawingEngine';
 import { ScreenshotButton } from './ui/ScreenshotButton';
@@ -44,6 +44,8 @@ export default function App() {
     if (!host) return;
     // One lifecycle for provider, persistence, sync and chart (StrictMode mounts twice in dev).
     const rt = createRuntime(host, initialMarket.current);
+    // A remembered market this page load cannot serve (e.g. ?provider=binance) was replaced.
+    if (rt.workspace.market !== initialMarket.current) setMarket(rt.workspace.market);
     setRuntime(rt);
     if (exposeTestHooks()) {
       window.__dac = rt.workspace;
@@ -60,8 +62,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    workspace?.setMarket(market);
+    if (!workspace) return;
+    workspace.setMarket(market);
     saveMarket(market);
+    rememberRecent({ market: market.market, symbol: market.symbol });
   }, [workspace, market]);
 
   const engine = workspace?.engine;
@@ -74,12 +78,14 @@ export default function App() {
   return (
     <div className="flex h-dvh w-full flex-col overflow-hidden bg-ink-950 pt-[env(safe-area-inset-top)]">
       <TopBar
-        symbols={runtime?.provider.symbols() ?? []}
+        markets={runtime?.markets ?? null}
+        market={market.market}
         symbol={market.symbol}
+        info={status?.symbol ?? null}
         timeframe={market.timeframe}
         live={feed?.live ?? 'idle'}
         loading={!feed?.initialLoaded}
-        onSymbol={(symbol) => setMarket((m) => ({ ...m, symbol }))}
+        onSymbol={(choice) => setMarket((m) => ({ ...m, market: choice.market, symbol: choice.symbol }))}
         onTimeframe={(timeframe) => setMarket((m) => ({ ...m, timeframe }))}
         right={
           <>

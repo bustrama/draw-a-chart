@@ -1,17 +1,17 @@
 import { MemoryDocumentSource, type DocumentSource } from '../drawing/documents';
 import type { StrokeProgress } from '../drawing/DrawingEngine';
 import { chartKeyString } from '../drawing/model';
-import type { MarketDataProvider } from '../market/types';
+import type { MarketRegistry } from '../market/registry';
 import { LocalDrawingDb } from '../sync/localDb';
 import { PersistentDocuments } from '../sync/PersistentDocuments';
 import { ServerRemote } from '../sync/serverRemote';
 import { SyncSession } from '../sync/session';
 import { SyncEngine } from '../sync/SyncEngine';
-import { createProvider, readSyncServer } from './runtimeConfig';
+import { createMarkets, DEFAULT_MARKET, readSyncServer } from './runtimeConfig';
 import { Workspace, type MarketSelection } from './Workspace';
 
 export interface Runtime {
-  readonly provider: MarketDataProvider;
+  readonly markets: MarketRegistry;
   readonly workspace: Workspace;
   readonly sync: SyncEngine | null;
   /** Identity on the sync server; null when sync is off. */
@@ -24,11 +24,11 @@ const PREVIEW_MAX_POINTS = 400;
 
 /**
  * Builds the whole app runtime around a chart host element:
- * market data provider, local-first drawing persistence (IndexedDB), sync with the self-hosted
+ * market data (the markets and their providers), local-first drawing persistence (IndexedDB), sync with the self-hosted
  * server (unless turned off), live stroke previews, and the chart workspace.
  */
 export function createRuntime(host: HTMLElement, market: MarketSelection): Runtime {
-  const provider = createProvider();
+  const markets = createMarkets();
   const syncServer = readSyncServer();
   const remote = syncServer === null ? null : new ServerRemote(syncServer);
   const session = remote ? new SyncSession(remote) : null;
@@ -80,8 +80,9 @@ export function createRuntime(host: HTMLElement, market: MarketSelection): Runti
 
   workspace = new Workspace({
     host,
-    provider,
-    market,
+    markets,
+    // A remembered market this page load cannot serve (e.g. US stocks with ?provider=binance).
+    market: markets.provider(market.market) ? market : DEFAULT_MARKET,
     documents,
     engineHooks: {
       wantsProgress: () => sync?.previewsReady === true,
@@ -130,7 +131,7 @@ export function createRuntime(host: HTMLElement, market: MarketSelection): Runti
   onWorkspace();
 
   return {
-    provider,
+    markets,
     workspace: ws,
     sync,
     session,
@@ -140,7 +141,7 @@ export function createRuntime(host: HTMLElement, market: MarketSelection): Runti
       unsubscribeSession?.();
       unsubscribeWorkspace();
       ws.dispose();
-      provider.dispose?.();
+      markets.dispose();
       sync?.dispose();
       persistent?.dispose();
       session?.dispose();

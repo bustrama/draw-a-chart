@@ -1,4 +1,5 @@
-import type { Candle } from './types';
+import { barsBetween, fixedClock } from '../../shared/sessions.ts';
+import type { BarClock, Candle } from './types';
 
 /**
  * Decides which of two versions of the same bar (same open time) is more up to date.
@@ -38,7 +39,7 @@ export interface Gap {
   readonly after: number;
   /** Open time of the first bar after the gap. */
   readonly before: number;
-  /** Number of missing bars. */
+  /** Number of missing bars (per the bar clock: nights and weekends are not missing bars). */
   readonly missing: number;
 }
 
@@ -49,11 +50,15 @@ export interface Gap {
  */
 export class CandleSeries {
   private bars: Candle[] = [];
-  readonly intervalMs: number;
+  /** Which bar open times exist (a fixed interval, or trading sessions). */
+  readonly clock: BarClock;
 
-  constructor(intervalMs: number) {
-    if (!(intervalMs > 0)) throw new Error('intervalMs must be positive');
-    this.intervalMs = intervalMs;
+  constructor(clock: BarClock | number) {
+    this.clock = typeof clock === 'number' ? fixedClock(clock) : clock;
+  }
+
+  get intervalMs(): number {
+    return this.clock.intervalMs;
   }
 
   get length(): number {
@@ -146,13 +151,18 @@ export class CandleSeries {
     return { kind: 'general' };
   }
 
-  /** Missing bars between consecutive stored bars (exchange downtime or dropped updates). */
+  /**
+   * Missing bars between consecutive stored bars (exchange downtime, dropped updates, or minutes
+   * without trades). Times the bar clock has no bars for (nights, weekends) are not gaps.
+   */
   findGaps(): Gap[] {
     const gaps: Gap[] = [];
+    const clock = this.clock;
     for (let k = 1; k < this.bars.length; k++) {
       const after = this.bars[k - 1].time;
       const before = this.bars[k].time;
-      const missing = Math.round((before - after) / this.intervalMs) - 1;
+      if (clock.continuous ? before - after <= clock.intervalMs : clock.next(after) >= before) continue;
+      const missing = barsBetween(clock, after, before);
       if (missing > 0) gaps.push({ after, before, missing });
     }
     return gaps;

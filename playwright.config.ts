@@ -21,7 +21,7 @@ export default defineConfig({
       // Dev server with sync off: parallel tests must not see each other's drawings.
       command: `npx vite --port ${DEV_PORT} --strictPort`,
       url: `http://localhost:${DEV_PORT}`,
-      env: { VITE_SYNC_SERVER: 'off', SYNC_DEV_DB: ':memory:' },
+      env: { VITE_SYNC_SERVER: 'off', SYNC_DEV_DB: ':memory:', MARKET_DATA: 'off' },
       reuseExistingServer: !process.env.CI,
       timeout: 90_000,
     },
@@ -30,7 +30,7 @@ export default defineConfig({
       // start their own instances of it on the same dist/.
       command: 'npm run build && node server/main.ts',
       url: `http://localhost:${PROD_PORT}/api/health`,
-      env: { PORT: String(PROD_PORT), DB_FILE: ':memory:', STATIC_DIR: 'dist' },
+      env: { PORT: String(PROD_PORT), DB_FILE: ':memory:', STATIC_DIR: 'dist', MARKET_DATA: 'off' },
       reuseExistingServer: !process.env.CI,
       timeout: 180_000,
     },

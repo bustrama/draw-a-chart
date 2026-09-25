@@ -1,7 +1,10 @@
-import { getTimeframe, barOpenTime } from '../timeframes';
-import type { Candle, CandleRequest, LiveCandleListener, MarketDataProvider, SymbolInfo, TimeframeId } from '../types';
+import { SessionCalendar, sessionsFromCalendar, stepBack, stepForward, NEW_YORK } from '../../../shared/sessions.ts';
+import { clockFor, getTimeframe } from '../timeframes';
+import type { BarClock, Candle, CandleRequest, LiveCandleListener, MarketDataProvider, PreparedChart, SymbolInfo, TimeframeId } from '../types';
 
 export interface MockProviderOptions {
+  /** Drawing namespace (default 'mock'). */
+  readonly id?: string;
   /** Clock for "now"; fix it for fully reproducible data. */
   readonly now?: () => number;
   /** Emit live updates at this period (ms); null disables live updates. */
@@ -9,85 +12,109 @@ export interface MockProviderOptions {
   /** How many bars of history exist before "now" (lets tests reach the end of history). */
   readonly historyBars?: number;
   readonly seed?: number;
+  /** Trading sessions (a stock market): bars exist only inside them. Default: around the clock. */
+  readonly calendar?: SessionCalendar;
+  readonly symbols?: readonly SymbolInfo[];
 }
 
-const SYMBOLS: readonly SymbolInfo[] = [
+const CRYPTO_SYMBOLS: readonly SymbolInfo[] = [
   { symbol: 'BTCUSDT', base: 'BTC', quote: 'USDT', pricePrecision: 2, minMove: 0.01 },
   { symbol: 'ETHUSDT', base: 'ETH', quote: 'USDT', pricePrecision: 2, minMove: 0.01 },
 ];
 
-const BASE_PRICE: Record<string, number> = { BTCUSDT: 64_000, ETHUSDT: 3_200 };
+export const MOCK_STOCK_SYMBOLS: readonly SymbolInfo[] = [
+  { symbol: 'SPY', base: 'SPY', quote: 'USD', name: 'Mock S&P 500 ETF', pricePrecision: 2, minMove: 0.01, timeZone: NEW_YORK, delayMs: 15 * 60_000 },
+  { symbol: 'AAPL', base: 'AAPL', quote: 'USD', name: 'Mock Apple', pricePrecision: 2, minMove: 0.01, timeZone: NEW_YORK, delayMs: 15 * 60_000 },
+];
+
+const BASE_PRICE: Record<string, number> = { BTCUSDT: 64_000, ETHUSDT: 3_200, SPY: 560, AAPL: 230 };
 
 /**
  * Deterministic synthetic market data. Prices are a pure function of (symbol, time), so any
  * page of history can be generated independently and repeated requests return identical bars.
+ * With a session calendar it behaves like a stock market: no bars at night or on weekends.
  */
 export class MockProvider implements MarketDataProvider {
-  readonly id = 'mock';
+  readonly id: string;
   readonly name = 'Mock data';
   readonly maxCandlesPerRequest = 1000;
   private readonly now: () => number;
   private readonly liveIntervalMs: number | null;
   private readonly historyBars: number;
   private readonly seed: number;
+  private readonly calendar: SessionCalendar | null;
+  private readonly known: readonly SymbolInfo[];
 
   constructor(options: MockProviderOptions = {}) {
+    this.id = options.id ?? 'mock';
     this.now = options.now ?? (() => Date.now());
     this.liveIntervalMs = options.liveIntervalMs === undefined ? 1000 : options.liveIntervalMs;
     this.historyBars = options.historyBars ?? 5000;
     this.seed = options.seed ?? 7;
+    this.calendar = options.calendar ?? null;
+    this.known = options.symbols ?? CRYPTO_SYMBOLS;
   }
 
   symbols(): readonly SymbolInfo[] {
-    return SYMBOLS;
+    return this.known;
+  }
+
+  async prepare(symbol: string, timeframe: TimeframeId): Promise<PreparedChart> {
+    const info = this.known.find((s) => s.symbol === symbol) ?? { symbol, base: symbol, quote: '', pricePrecision: 2, minMove: 0.01 };
+    return { info, clock: this.clockOf(timeframe) };
   }
 
   async fetchCandles(req: CandleRequest): Promise<Candle[]> {
-    const tf = getTimeframe(req.timeframe);
+    const clock = this.clockOf(req.timeframe);
     const now = this.now();
-    const lastOpen = barOpenTime(now, tf.ms);
-    const firstOpen = lastOpen - (this.historyBars - 1) * tf.ms;
+    const lastOpen = clock.latest(now);
+    if (lastOpen === null) return [];
+    const firstOpen = stepBack(clock, lastOpen, this.historyBars - 1);
     const limit = Math.min(req.limit, this.maxCandlesPerRequest);
     let from: number;
     let to: number;
     if (req.startTime !== undefined) {
-      from = Math.max(firstOpen, Math.ceil(req.startTime / tf.ms) * tf.ms);
-      to = Math.min(lastOpen, req.endTime !== undefined ? barOpenTime(req.endTime, tf.ms) : lastOpen, from + (limit - 1) * tf.ms);
+      from = Math.max(firstOpen, firstOpenAtOrAfter(clock, req.startTime));
+      const end = req.endTime !== undefined ? (clock.latest(req.endTime) ?? -Infinity) : lastOpen;
+      to = Math.min(lastOpen, end, stepForward(clock, from, limit - 1));
     } else {
-      to = Math.min(lastOpen, req.endTime !== undefined ? barOpenTime(req.endTime, tf.ms) : lastOpen);
-      from = Math.max(firstOpen, to - (limit - 1) * tf.ms);
+      to = Math.min(lastOpen, req.endTime !== undefined ? (clock.latest(req.endTime) ?? -Infinity) : lastOpen);
+      from = Math.max(firstOpen, stepBack(clock, to, limit - 1));
     }
     const out: Candle[] = [];
-    for (let t = from; t <= to; t += tf.ms) out.push(this.bar(req.symbol, t, tf.ms, now));
+    for (let t = from; t <= to; t = clock.next(t)) out.push(this.bar(req.symbol, t, clock.end(t), now));
     return out;
   }
 
   subscribeCandles(symbol: string, timeframe: TimeframeId, listener: LiveCandleListener): () => void {
     listener.onStatus?.('live');
     if (this.liveIntervalMs === null) return () => undefined;
-    const tf = getTimeframe(timeframe);
-    let lastOpen = barOpenTime(this.now(), tf.ms);
+    const clock = this.clockOf(timeframe);
+    let lastOpen = clock.latest(this.now());
     const id = setInterval(() => {
       const now = this.now();
-      const open = barOpenTime(now, tf.ms);
-      if (open > lastOpen) {
-        listener.onCandle(this.bar(symbol, lastOpen, tf.ms, lastOpen + tf.ms));
-        lastOpen = open;
-      }
-      listener.onCandle(this.bar(symbol, open, tf.ms, now));
+      const open = clock.latest(now);
+      if (open === null) return;
+      if (lastOpen !== null && open > lastOpen) listener.onCandle(this.bar(symbol, lastOpen, clock.end(lastOpen), clock.end(lastOpen)));
+      lastOpen = open;
+      listener.onCandle(this.bar(symbol, open, clock.end(open), now));
     }, this.liveIntervalMs);
     return () => clearInterval(id);
   }
 
-  /** Bar at open time `t`, as it looked at time `asOf` (the forming bar is partial). */
-  private bar(symbol: string, t: number, intervalMs: number, asOf: number): Candle {
+  private clockOf(timeframe: TimeframeId): BarClock {
+    return clockFor(getTimeframe(timeframe), this.calendar);
+  }
+
+  /** Bar opening at `t` and ending at `end`, as it looked at time `asOf` (the forming bar is partial). */
+  private bar(symbol: string, t: number, end: number, asOf: number): Candle {
     const base = BASE_PRICE[symbol] ?? 100;
-    const end = Math.min(t + intervalMs, Math.max(t, asOf));
+    const at = Math.min(end, Math.max(t, asOf));
     const open = this.price(base, t);
-    const close = this.price(base, end);
+    const close = this.price(base, at);
     const wick = base * 0.0009 * (0.3 + this.noise(t * 3 + 1));
-    const closed = asOf >= t + intervalMs;
-    const progress = Math.min(1, Math.max(0, (asOf - t) / intervalMs));
+    const closed = asOf >= end;
+    const progress = Math.min(1, Math.max(0, (asOf - t) / (end - t)));
     return {
       time: t,
       open: round2(open),
@@ -109,6 +136,26 @@ export class MockProvider implements MarketDataProvider {
     const x = Math.sin(n * 12.9898 + this.seed * 78.233) * 43758.5453;
     return x - Math.floor(x);
   }
+}
+
+/** First bar open at or after `time`. */
+function firstOpenAtOrAfter(clock: BarClock, time: number): number {
+  return clock.bucket(time) === time ? time : clock.next(time);
+}
+
+/**
+ * A US-like trading calendar for offline development and browser tests: every weekday from
+ * `fromYear` to `toYear`, 9:30-16:00 New York time (no holidays).
+ */
+export function mockUsCalendar(fromYear = 2025, toYear = 2027): SessionCalendar {
+  const rows: { date: string; open: string; close: string }[] = [];
+  for (let t = Date.UTC(fromYear, 0, 1); t < Date.UTC(toYear + 1, 0, 1); t += 86_400_000) {
+    const d = new Date(t);
+    const weekday = d.getUTCDay();
+    if (weekday === 0 || weekday === 6) continue;
+    rows.push({ date: d.toISOString().slice(0, 10), open: '09:30', close: '16:00' });
+  }
+  return new SessionCalendar(sessionsFromCalendar(rows, NEW_YORK));
 }
 
 function round2(v: number): number {

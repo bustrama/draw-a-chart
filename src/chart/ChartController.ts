@@ -18,8 +18,9 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts';
 import type { CandleSeries, SeriesChange } from '../market/candleSeries';
-import type { Candle, SymbolInfo } from '../market/types';
+import type { BarClock, Candle, SymbolInfo } from '../market/types';
 import { THEME } from './theme';
+import { timeFormatters } from './timeFormat';
 import { TimeIndex } from './timeIndex';
 import { LinearPriceMapping, Viewport } from './viewport';
 
@@ -50,7 +51,8 @@ export interface PaneRect {
 }
 
 export interface ChartControllerOptions {
-  readonly intervalMs: number;
+  /** Which bar open times exist (drives the future area of the time axis). */
+  readonly clock: BarClock;
   readonly symbol: SymbolInfo;
   readonly watermark: string;
   /** Called when the visible range approaches the oldest loaded bar. */
@@ -73,7 +75,7 @@ export class ChartController {
   readonly candles: ISeriesApi<'Candlestick'>;
   readonly volume: ISeriesApi<'Histogram'>;
   private readonly container: HTMLElement;
-  private intervalMs: number;
+  private clock: BarClock;
   private timeIndex = TimeIndex.EMPTY;
   private timeVersion = 0;
   private displayedTimes: number[] = [];
@@ -94,8 +96,9 @@ export class ChartController {
 
   constructor(container: HTMLElement, options: ChartControllerOptions) {
     this.container = container;
-    this.intervalMs = options.intervalMs;
+    this.clock = options.clock;
     this.onNeedOlder = options.onNeedOlder;
+    const time = timeFormatters(options.symbol.timeZone, isDaily(options.clock));
     this.chart = createChart(container, {
       autoSize: true,
       layout: {
@@ -104,6 +107,7 @@ export class ChartController {
         fontFamily: THEME.fontFamily,
         fontSize: 11,
       },
+      localization: { timeFormatter: time.timeFormatter },
       grid: {
         vertLines: { color: THEME.grid },
         horzLines: { color: THEME.grid },
@@ -127,6 +131,7 @@ export class ChartController {
         // Explicit: the default (half the chart width) is 0 before the first layout, which
         // clamps any bar spacing applied before then to the minimum.
         maxBarSpacing: 80,
+        tickMarkFormatter: time.tickMarkFormatter,
       },
       // Touch never reaches the chart; these only matter for mouse/trackpad.
       handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: false, vertTouchDrag: false },
@@ -171,14 +176,16 @@ export class ChartController {
   // ---- data -------------------------------------------------------------------------------
 
   /** Replaces all data (symbol/timeframe switch). Clears any deferred updates. */
-  resetData(series: CandleSeries, intervalMs: number, symbol: SymbolInfo, watermark: string): void {
-    this.intervalMs = intervalMs;
+  resetData(series: CandleSeries, clock: BarClock, symbol: SymbolInfo, watermark: string): void {
+    this.clock = clock;
     this.source = series;
     this.pendingTails = [];
     this.pendingFull = false;
     this.candles.applyOptions({
       priceFormat: { type: 'price', precision: symbol.pricePrecision, minMove: symbol.minMove },
     });
+    const time = timeFormatters(symbol.timeZone, isDaily(clock));
+    this.chart.applyOptions({ localization: { timeFormatter: time.timeFormatter }, timeScale: { tickMarkFormatter: time.tickMarkFormatter } });
     this.watermark.applyOptions({ lines: [{ text: watermark, color: THEME.watermark, fontSize: 56, fontStyle: '600' }] });
     this.candles.priceScale().setAutoScale(true);
     this.fullSync(series);
@@ -270,7 +277,7 @@ export class ChartController {
   }
 
   private rebuildTimeIndex(): void {
-    this.timeIndex = TimeIndex.from(this.displayedTimes, this.intervalMs, ++this.timeVersion);
+    this.timeIndex = TimeIndex.from(this.displayedTimes, this.clock, ++this.timeVersion);
   }
 
   get currentTimeIndex(): TimeIndex {
@@ -490,6 +497,10 @@ class ViewSyncPrimitive implements ISeriesPrimitive<Time> {
   updateAllViews(): void {
     this.notify();
   }
+}
+
+function isDaily(clock: BarClock): boolean {
+  return clock.intervalMs >= 86_400_000;
 }
 
 function toCandleData(c: Candle): CandlestickData<Time> {

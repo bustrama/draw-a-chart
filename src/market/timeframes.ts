@@ -1,4 +1,5 @@
-import type { Timeframe, TimeframeId } from './types';
+import { fixedClock, type SessionCalendar } from '../../shared/sessions.ts';
+import type { BarClock, Timeframe, TimeframeId } from './types';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -24,7 +25,15 @@ export function isTimeframeId(value: string): value is TimeframeId {
   return BY_ID.has(value as TimeframeId);
 }
 
-/** Open time of the bar containing `time`. Valid for UTC-aligned fixed intervals (all supported timeframes). */
+/** Open time of the bar containing `time`. Valid for UTC-aligned fixed intervals (around-the-clock markets). */
 export function barOpenTime(time: number, intervalMs: number): number {
   return Math.floor(time / intervalMs) * intervalMs;
+}
+
+/**
+ * Which bar open times exist for a timeframe: every interval around the clock (crypto), or only
+ * within the trading sessions of a calendar (stocks: regular hours, no nights, weekends, holidays).
+ */
+export function clockFor(tf: Timeframe, calendar?: SessionCalendar | null): BarClock {
+  return calendar ? calendar.clock(tf.ms, tf.id === '1d') : fixedClock(tf.ms);
 }

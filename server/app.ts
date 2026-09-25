@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import type { ChangesResponse, ErrorResponse, PreviewMessage, PullResponse, RemoteRow, ServerMessage, SessionInfo } from '../src/sync/protocol.ts';
+import { allow, HttpError, json } from './httpUtil.ts';
 import type { DrawingStore } from './store.ts';
 import { parseChangesRequest, toPreviewMessage } from './validate.ts';
 
@@ -56,16 +57,6 @@ interface LiveConn {
 const PREVIEW_BACKLOG_BYTES = 1 << 20;
 /** A connection this far behind on rows is dropped; the client reconnects and pulls. */
 const ROWS_BACKLOG_BYTES = 16 << 20;
-
-class HttpError extends Error {
-  readonly status: number;
-  readonly headers: Readonly<Record<string, string>>;
-  constructor(status: number, message: string, headers: Readonly<Record<string, string>> = {}) {
-    super(message);
-    this.status = status;
-    this.headers = headers;
-  }
-}
 
 /**
  * The sync API, independent of how it is hosted: the production server (server/http.ts) and the
@@ -285,11 +276,6 @@ export function createSyncApp(options: SyncAppOptions): SyncApp {
   };
 }
 
-function allow(req: IncomingMessage, method: 'GET' | 'POST'): void {
-  if (req.method === method || (method === 'GET' && req.method === 'HEAD')) return;
-  throw new HttpError(405, 'method not allowed', { Allow: method === 'GET' ? 'GET, HEAD' : method });
-}
-
 /** A same-origin path to continue to (never another site: no open redirect). */
 function sameOriginPath(next: string | null): string {
   if (!next || !next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\') || next.startsWith('/api/')) return '/';
@@ -299,17 +285,6 @@ function sameOriginPath(next: string | null): string {
 function refuse(socket: Duplex, status: number, text: string): void {
   if (socket.destroyed) return;
   socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`, () => socket.destroy());
-}
-
-function json(res: ServerResponse, status: number, body: unknown): void {
-  const data = JSON.stringify(body);
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': Buffer.byteLength(data),
-    'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
-  });
-  res.end(data);
 }
 
 function send(ws: WebSocket, message: ServerMessage): void {

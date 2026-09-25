@@ -7,7 +7,10 @@ A personal, stylus-first charting PWA for studying and practising Wyckoff analys
 - **Fingers navigate**: pan with momentum, pinch-zoom, tap/long-press crosshair, axis scaling. They
   never draw, and a resting palm is rejected.
 - **The mouse navigates** like any chart. Press `D` (or the mouse button in the tool rail) to draw with it.
-- Binance Spot live candles (BTCUSDT, ETHUSDT · 1m, 5m, 15m, 1h, 4h, 1D).
+- **Markets:** every Binance Spot pair (live), and US stocks and ETFs (regular hours, volume from
+  every exchange; 15 minutes delayed on Alpaca's free plan). Symbol search across both;
+  timeframes 1m, 5m, 15m, 1h, 4h, 1D. The server caches history and fetches only what is missing,
+  so charts open instantly on every device.
 - Drawings are anchored to chart time/price, saved on the device, and synced live across all
   your devices through a small self-hosted server (one Docker container).
 - Screenshot: copy to the clipboard, share, or download as PNG.
@@ -61,6 +64,21 @@ as restored. Devices notice when they reconnect: the backup's version of each dr
 drawings the backup does not have are uploaded again from the devices that still have them. The
 same happens automatically if the server ever starts with an empty database (e.g. a lost volume).
 
+**US stocks.** Put an Alpaca API key in a `.env` file next to `docker-compose.yml` (never commit
+it). A free paper-trading account is enough: [app.alpaca.markets](https://app.alpaca.markets) →
+Paper Trading → API Keys.
+
+```bash
+APCA_API_KEY_ID=...
+APCA_API_SECRET_KEY=...
+```
+
+The free plan gives 15-minute-delayed data from every US exchange. With a paid real-time plan,
+add `ALPACA_FEED=sip`. Without a key the app charts crypto only.
+
+**The bar cache** (`market.sqlite` next to the drawings) is only a cache: it is not in the
+backups and can be deleted at any time (history is fetched again on demand).
+
 Server settings (environment variables) are listed in `.env.example` and `server/main.ts`.
 
 ### Security
@@ -86,14 +104,16 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. `npm run dev` includes the sync API (database in `.data/`), and it
-listens on the LAN, so phones and tablets can open `http://<this-pc>:5173` and sync with it.
-Append `?provider=mock` for offline, deterministic chart data, or `?sync=off` to keep a page load
-local-only.
+Open http://localhost:5173. `npm run dev` includes the sync API and the market-data API
+(databases in `.data/`; US stocks need the Alpaca key in `.env`, see above), and it listens on the
+LAN, so phones and tablets can open `http://<this-pc>:5173` and sync with it. Append
+`?provider=mock` for offline, deterministic chart data (a crypto and a US-like market),
+`?provider=binance` for crypto straight from Binance without the server, or `?sync=off` to keep a
+page load local-only.
 
 | Command | What it does |
 |---|---|
-| `npm test` | Unit tests (Vitest), including the sync server |
+| `npm test` | Unit tests (Vitest), including the sync and market-data server |
 | `npm run e2e` | Browser tests (Playwright: Chromium, WebKit, the production build, multi-device sync). The first time, run `npm run e2e:install`. |
 | `npm run build` / `npm start` | Production build / serve it with the sync server on port 8080 |
 | `npm run lint`, `npm run typecheck` | Static checks |

@@ -1,16 +1,17 @@
 /// <reference types="vitest/config" />
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { syncDevServer } from './server/vitePlugin.ts';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [
     react(),
     tailwindcss(),
-    // `npm run dev` also serves the sync API (same origin, like the production server).
-    syncDevServer(),
+    // `npm run dev` also serves the sync and market-data APIs (same origin, like the production
+    // server). The server side reads all of .env (e.g. the Alpaca key); the app only VITE_*.
+    syncDevServer(loadEnv(mode, process.cwd(), '')),
     VitePWA({
       // 'prompt', not 'autoUpdate': an automatic reload could interrupt a drawing session.
       registerType: 'prompt',
@@ -65,8 +66,8 @@ export default defineConfig({
     chunkSizeWarningLimit: 900,
   },
   test: {
-    include: ['src/**/*.test.ts', 'server/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'server/**/*.test.ts', 'shared/**/*.test.ts'],
     environment: 'node',
     restoreMocks: true,
   },
-});
+}));

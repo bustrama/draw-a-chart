@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { NEW_YORK, SessionCalendar, sessionsFromCalendar } from '../../shared/sessions.ts';
 import { CandleFeed } from './candleFeed';
 import type { SeriesChange } from './candleSeries';
 import { FakeProvider, flushMicrotasks, makeCandles } from './testing/fakes';
@@ -144,6 +145,16 @@ describe('CandleFeed', () => {
     expect(feed.series.all()[9]).toMatchObject({ closed: true, volume: 999 });
   });
 
+  it('with complete history, only checks where live updates join it', async () => {
+    const history = [...makeCandles(T0, 5, M), ...makeCandles(T0 + 10 * M, 5, M)]; // a hole inside
+    const { provider, feed } = setup(history);
+    provider.completeHistory = true;
+    feed.start();
+    await flushMicrotasks();
+    await feed.whenIdle();
+    expect(provider.requests).toHaveLength(1); // no attempt to fill the hole (e.g. minutes without trades)
+  });
+
   it('ignores late responses after dispose and unsubscribes', async () => {
     const history = makeCandles(T0, 10, M);
     const { provider, feed, changes } = setup(history);
@@ -155,5 +166,67 @@ describe('CandleFeed', () => {
     await flushMicrotasks();
     expect(changes).toEqual([]);
     expect(provider.unsubscribed).toBe(1);
+  });
+});
+
+describe('CandleFeed with trading sessions', () => {
+  const H = 3_600_000;
+  const z = (iso: string) => Date.parse(iso);
+  const cal = new SessionCalendar(
+    sessionsFromCalendar(
+      ['2026-09-24', '2026-09-25', '2026-09-28'].map((date) => ({ date, open: '09:30', close: '16:00' })),
+      NEW_YORK,
+    ),
+  );
+  const clock = cal.clock(H);
+  const tf1h = getTimeframe('1h');
+
+  /** Every hourly bar of the calendar (7 a day), oldest first. */
+  function sessionBars(): Candle[] {
+    const out: Candle[] = [];
+    for (let t = cal.sessions[0].open; t < cal.sessions[2].close; t = clock.next(t)) out.push({ time: t, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1, closed: true });
+    return out;
+  }
+
+  function sessionSetup(history: Candle[]) {
+    const provider = new FakeProvider();
+    provider.handler = (req) => {
+      let rows = history;
+      if (req.startTime !== undefined) rows = rows.filter((c) => c.time >= req.startTime!);
+      if (req.endTime !== undefined) rows = rows.filter((c) => c.time <= req.endTime!);
+      return req.startTime !== undefined ? rows.slice(0, req.limit) : rows.slice(-req.limit);
+    };
+    const feed = new CandleFeed(provider, 'AAPL', tf1h, { onChange: () => undefined }, { clock, now: () => z('2026-09-28T21:00:00Z') });
+    return { provider, feed };
+  }
+
+  it('does not treat nights and weekends as gaps', async () => {
+    const all = sessionBars();
+    expect(all).toHaveLength(21);
+    const { provider, feed } = sessionSetup(all);
+    feed.start();
+    await flushMicrotasks();
+    await feed.whenIdle();
+    expect(provider.requests).toHaveLength(1);
+    expect(feed.series.findGaps()).toEqual([]);
+  });
+
+  it('backfills only when the live feed really skipped a bar', async () => {
+    const all = sessionBars();
+    const friday = all.filter((c) => c.time < z('2026-09-26T00:00:00Z'));
+    const { provider, feed } = sessionSetup(friday.slice(0, -1)); // up to Friday 18:30Z
+    feed.start();
+    await flushMicrotasks();
+    provider.handler = (req) => all.filter((c) => c.time >= req.startTime! && c.time <= req.endTime!);
+    // Monday's first bar arrives, but Friday's 19:30Z bar was never seen: fetch it.
+    provider.listener?.onCandle({ ...all[14], closed: false });
+    await feed.whenIdle();
+    expect(provider.requests.at(-1)).toMatchObject({ startTime: z('2026-09-25T18:30:00Z'), endTime: z('2026-09-28T13:30:00Z') - 1 });
+    expect(feed.series.findGaps()).toEqual([]);
+    // The next bar directly follows: no request.
+    const count = provider.requests.length;
+    provider.listener?.onCandle({ ...all[15], closed: false });
+    await feed.whenIdle();
+    expect(provider.requests).toHaveLength(count);
   });
 });

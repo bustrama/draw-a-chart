@@ -1,5 +1,6 @@
 import type { Clock, StreamSocket } from '../binance/stream';
-import type { Candle, CandleRequest, LiveCandleListener, MarketDataProvider, SymbolInfo, TimeframeId } from '../types';
+import { clockFor, getTimeframe } from '../timeframes';
+import type { Candle, CandleRequest, LiveCandleListener, MarketDataProvider, PreparedChart, SymbolInfo, TimeframeId } from '../types';
 
 /** Deterministic timer implementation for tests. */
 export class ManualClock implements Clock {
@@ -95,6 +96,7 @@ export class FakeProvider implements MarketDataProvider {
   readonly id = 'fake';
   readonly name = 'Fake';
   readonly maxCandlesPerRequest: number;
+  completeHistory = false;
   readonly requests: CandleRequest[] = [];
   listener: LiveCandleListener | null = null;
   unsubscribed = 0;
@@ -106,6 +108,10 @@ export class FakeProvider implements MarketDataProvider {
 
   symbols(): readonly SymbolInfo[] {
     return [];
+  }
+
+  async prepare(symbol: string, timeframe: TimeframeId): Promise<PreparedChart> {
+    return { info: { symbol, base: symbol, quote: '', pricePrecision: 2, minMove: 0.01 }, clock: clockFor(getTimeframe(timeframe)) };
   }
 
   async fetchCandles(req: CandleRequest): Promise<Candle[]> {

@@ -1,5 +1,6 @@
 import { CandleSeries, type SeriesChange } from './candleSeries';
-import type { Candle, LiveStatus, MarketDataProvider, Timeframe } from './types';
+import { clockFor } from './timeframes';
+import type { BarClock, Candle, LiveStatus, MarketDataProvider, Timeframe } from './types';
 
 export interface FeedState {
   readonly live: LiveStatus;
@@ -15,6 +16,8 @@ export interface FeedListener {
 }
 
 export interface CandleFeedOptions {
+  /** Which bar open times exist (trading sessions); default: every interval around the clock. */
+  readonly clock?: BarClock;
   readonly initialBars?: number;
   readonly pageSize?: number;
   readonly now?: () => number;
@@ -46,14 +49,16 @@ export class CandleFeed {
   readonly symbol: string;
   readonly timeframe: Timeframe;
   private readonly listener: FeedListener;
-  private readonly o: Required<Omit<CandleFeedOptions, 'onError'>> & Pick<CandleFeedOptions, 'onError'>;
+  private readonly clock: BarClock;
+  private readonly o: Required<Omit<CandleFeedOptions, 'onError' | 'clock'>> & Pick<CandleFeedOptions, 'onError'>;
 
   constructor(provider: MarketDataProvider, symbol: string, timeframe: Timeframe, listener: FeedListener, options: CandleFeedOptions = {}) {
     this.provider = provider;
     this.symbol = symbol;
     this.timeframe = timeframe;
     this.listener = listener;
-    this.series = new CandleSeries(timeframe.ms);
+    this.clock = options.clock ?? clockFor(timeframe);
+    this.series = new CandleSeries(this.clock);
     this.o = {
       initialBars: options.initialBars ?? 1000,
       pageSize: Math.min(options.pageSize ?? 1000, provider.maxCandlesPerRequest),
@@ -137,7 +142,10 @@ export class CandleFeed {
       this.ready = true;
       this.patchState({ initialLoaded: true, error: null });
       this.listener.onChange({ kind: 'general' }, this.series);
-      this.backfillGaps(candles.length > 0 ? candles[0].time : 0);
+      // A provider with complete history (the server's cache) has no holes to fill inside it:
+      // only where the buffered live updates join it. Minutes without trades stay unrequested.
+      const since = candles.length === 0 ? 0 : this.provider.completeHistory ? candles[candles.length - 1].time : candles[0].time;
+      this.backfillGaps(since);
       // A bar that closed while the history was loading (REST saw it open, the stream moved on
       // to the next bar) has no final update: re-fetch it.
       const bars = this.series.all();
@@ -163,7 +171,7 @@ export class CandleFeed {
     const prevLast = this.series.last;
     this.emit(this.series.merge([c]));
     if (!prevLast || c.time <= prevLast.time) return;
-    if (c.time > prevLast.time + this.timeframe.ms) {
+    if (c.time > this.clock.next(prevLast.time)) {
       // Missed at least one whole bar (e.g. dropped messages): fetch it and finalize prevLast.
       this.enqueueBackfill(prevLast.time, c.time - 1);
     } else if (!prevLast.closed) {
@@ -207,7 +215,7 @@ export class CandleFeed {
       if (this.disposed) return;
       if (page.length > 0) this.emit(this.series.merge(page));
       if (page.length < this.o.pageSize) break;
-      start = page[page.length - 1].time + this.timeframe.ms;
+      start = this.clock.next(page[page.length - 1].time);
     }
     if (!this.disposed) this.rememberGaps(from, to);
   }
@@ -215,7 +223,7 @@ export class CandleFeed {
   /** Gaps inside [from, to] that survived a backfill exist at the exchange; don't retry them. */
   private rememberGaps(from: number, to: number): void {
     for (const g of this.series.findGaps()) {
-      if (g.after >= from - this.timeframe.ms && g.before <= to + this.timeframe.ms) this.knownGaps.add(gapKey(g.after, g.before));
+      if (g.after >= this.clock.prev(from) && g.before <= this.clock.next(to)) this.knownGaps.add(gapKey(g.after, g.before));
     }
   }
 

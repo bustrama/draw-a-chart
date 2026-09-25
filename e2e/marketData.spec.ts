@@ -79,13 +79,13 @@ async function seriesTimes(page: Page): Promise<number[]> {
 
 async function openBinance(page: Page, lagBars = 0): Promise<FakeBinance> {
   const fake = await fakeBinance(page, lagBars);
-  await page.goto('/?symbol=BTCUSDT&tf=1h');
+  await page.goto('/?provider=binance&symbol=BTCUSDT&tf=1h');
   await waitForChart(page);
   await expect.poll(() => fake.openCount()).toBe(1);
   return fake;
 }
 
-test.describe('market data (Binance code path, mocked network)', () => {
+test.describe('market data (direct Binance code path, mocked network)', () => {
   test('loads normalized history and applies live updates to the forming candle', async ({ page }) => {
     const fake = await openBinance(page);
     const times = await seriesTimes(page);

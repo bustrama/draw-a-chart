@@ -13,7 +13,7 @@ reasons behind them, and the platform facts they rest on. Status of each part is
 | Styling | Tailwind CSS 4 | Preferred; tokens in `src/index.css`. |
 | Chart | TradingView Lightweight Charts **5.2** | Fast canvas chart with a documented primitive (plugin) API that lets drawings render *inside* the chart's paint pass. No alternative offered a better input or drawing story. |
 | Ink geometry | `perfect-freehand` 1.2 | Pressure-sensitive stroke outlines; about 0.08 µs per point (30k points ≈ 2.5 ms on desktop). The same code renders live and committed ink, so strokes don't "pop" on commit. |
-| Market data | Binance Spot public REST + WebSocket | No keys. Behind a provider interface. |
+| Market data | Crypto: Binance Spot (public, no key). US stocks and ETFs: Alpaca (free plan: every exchange, 15 min delayed). Both behind the self-hosted server's bar cache; crypto live updates straight from Binance's stream | Free sources with consolidated volume (Wyckoff needs real volume). The cache makes charts open instantly and fetches only missing bars. See §6. |
 | Persistence | IndexedDB (`idb`) on each device + a self-hosted sync server: Node 24, SQLite (`node:sqlite`), WebSocket (`ws`), in one Docker container | Local-first; sync is only needed to share drawings between devices. No accounts yet (see §7). |
 | PWA | `vite-plugin-pwa` 1.x (`registerType: 'prompt'`) | Auto-update could reload mid-stroke, so updates are prompted instead. |
 | Tests | Vitest 5 (unit, including the sync server) + Playwright 1.63 (Chromium via CDP for trusted touch/pen input; WebKit iPad-like context; the production server; multi-device sync) | |
@@ -24,13 +24,20 @@ subscribes via `useSyncExternalStore`.
 ## 2. Module map
 
 ```
+shared/              code the app and the server both run (no imports; .ts extensions)
+  sessions.ts        trading sessions, bar clocks (which bar times exist), New York time
 src/
   market/            provider-agnostic market data
-    types.ts         Candle, MarketDataProvider, LiveStatus
+    types.ts         Candle, MarketDataProvider (prepare → symbol info + bar clock), LiveStatus
+    protocol.ts      wire protocol of /api/market (types only, shared with the server)
+    registry.ts      the markets of this page load (binance, us) and symbol search
     candleSeries.ts  sorted/deduped bars, merge semantics, change classification, gap finder
     candleFeed.ts    one symbol+timeframe: history, live, pagination, gap backfill, resync
+    server/          MarketApi (HTTP client) and ServerMarketProvider (history from the server,
+                     live from Binance's stream or by polling the server)
     binance/         REST client (paced, failover, backoff), stream client (one socket), provider
-    mock/            deterministic provider (?provider=mock) for offline dev and E2E
+    mock/            deterministic provider (?provider=mock) for offline dev and E2E, with an
+                     optional US-like session calendar
   chart/
     ChartController  owns Lightweight Charts: data sync, deferral, viewport, navigation setters
     timeIndex.ts     time <-> fractional logical index (the anchoring core)
@@ -65,6 +72,12 @@ server/              self-hosted sync server (Node 24 runs the TypeScript direct
   app.ts             the API, the live hub, and identify() (the auth hook)
   store.ts           SQLite: compare-and-swap writes, pulls, migrations, backup
   validate.ts        request and preview validation
+  market/            market data: /api/market/* (§6)
+    cache.ts         SQLite bar cache (market.sqlite) with coverage ranges
+    service.ts       bars through the cache, symbol lists, US calendar, split checks
+    binance.ts, alpaca.ts, upstream.ts   upstream clients (rate-limited, retries)
+    sessionBars.ts   regular-hours bars from Alpaca's bars
+    api.ts           HTTP routes and input validation
   static.ts          built app with cache headers, SPA fallback, traversal guard
   vitePlugin.ts      the same API inside `npm run dev`
 Dockerfile, docker-compose.yml   one container: the app + its sync server, data on a volume
@@ -252,9 +265,11 @@ So:
 - `TimeIndex` maps time ↔ **fractional logical**:
   - piecewise linear between bar open times (a bar's open time sits at the bar centre);
   - gaps compress exactly as the chart compresses them (Binance history has real gaps,
-    e.g. 80 missing 1m bars on 2023-03-24);
-  - it extrapolates with the nominal interval before the first and after the last bar, so
-    future-area anchors stay put as new bars arrive.
+    e.g. 80 missing 1m bars on 2023-03-24; stocks have nights and weekends);
+  - after the last bar it steps through the future bars of the **bar clock** (§6.1): every
+    interval for crypto, the next session's bars for stocks. So future-area anchors stay put as
+    new bars arrive, also over a weekend (a target drawn three bars after Friday's close is on
+    Monday's third bar once it exists). Before the first bar it uses the nominal interval.
 - `Viewport` then applies LWC's linear time scale:
   - x = x(0) + L · barSpacing, with x(0) and barSpacing read from the public API each frame;
   - price uses a linear mapping sampled from the series.
@@ -288,8 +303,111 @@ rewrite.
 
 ## 6. Market data
 
-- **`MarketDataProvider`**: `fetchCandles(request)` + `subscribeCandles(symbol, timeframe, listener)`,
-  normalized `Candle` (ms open time, numbers, `closed` flag).
+Two markets, chosen for free data with **consolidated volume** (volume analysis is the point of
+Wyckoff study; a single-exchange feed shows a few percent of it):
+
+| Market id | What | Upstream | Freshness |
+|---|---|---|---|
+| `binance` | every Binance Spot pair | Binance public API, no key | real time |
+| `us` | US stocks and ETFs, regular hours | Alpaca market data, free paper-account key | 15 min delayed (free plan: every exchange, `end` must be ≥ 15 min old); `ALPACA_FEED=sip` with a paid plan |
+
+Measured on the free plan (2026-09-25): AAPL over 2½ hours, the real-time IEX feed saw **4.3 %**
+of the consolidated volume, so real-time-but-partial was rejected in favour of delayed-but-complete.
+The market id is also the drawings' namespace (`ChartKey.provider`): `us`, not `alpaca`, so
+drawings survive a change of data vendor. Existing crypto drawings keep `binance`.
+
+### 6.1 Bar clocks and trading sessions (`shared/sessions.ts`)
+
+A `BarClock` says which bar open times exist: `next`, `prev`, `latest` (the newest bar that has
+started), `bucket` (the bar containing a time, or null outside sessions) and `end`.
+
+- Crypto: `fixedClock(ms)`, every interval around the clock, aligned to the UTC epoch.
+- US stocks: `SessionCalendar.clock(ms)` from Alpaca's calendar (2015–2029, holidays and 13:00
+  early closes). Intraday bars start at the 9:30 open and repeat until the close; the last one
+  can be shorter (hourly: 9:30, 10:30 … 15:30–16:00; 4-hour: 9:30, 13:30). Daily bars open at
+  New York midnight (Alpaca's daily timestamps).
+- The same file runs on the server (Node type stripping; the image copies `shared/`) and in the
+  app, so both agree exactly on bar times. It has no imports; times are UTC ms; New York time is
+  converted with `Intl` (verified in the `node:24-alpine` image: full ICU).
+- Used by: `TimeIndex` (future area, §5.1), `CandleSeries.findGaps` and `CandleFeed` (nights and
+  weekends are not missing bars), the server (which slots a request covers, bucketing).
+
+### 6.2 The server's bar cache (`server/market/`)
+
+- `/api/market/bars?market&symbol&tf&limit[&start][&end]` has Binance's klines semantics (latest
+  `limit` bars; `limit` bars up to `end`; up to `limit` bars from `start`), in compact arrays
+  `[t, o, h, l, c, v, closed]`. Also `/symbol`, `/search`, `/calendar`, `/markets`.
+- `market.sqlite` holds closed bars per series (market + symbol + timeframe) and **coverage**:
+  time ranges known to be complete. A request computes its bar slots with the clock, fetches
+  only the uncovered ranges upstream (one request also brings the forming bar), and stores bars
+  and coverage in one transaction. Ranges with no bars upstream (nights, before a listing, an
+  exchange outage) are covered too and never requested again.
+- The forming bar is never cached; it is fetched fresh, reused for 15 s so devices polling at the
+  same time cost one upstream call. A bar is final when it ended `settle` before the data time:
+  10 s for Binance (clock skew; the exchange finishing the bar); for Alpaca 60 s after the 15-minute
+  delay (late trade reports), and for a **daily** bar the end of the extended session (20:00 New
+  York), because its volume counts post-market trades. Requests to Alpaca keep `end` 30 s older
+  than the free plan requires (clock skew would otherwise turn into 403s).
+- Thinly traded stocks have minutes without trades: requests collect up to 4 chunks to fill
+  `limit`, and the app does not backfill holes inside server history (`completeHistory`).
+- Requests for one series run one at a time (no duplicate upstream calls). Upstream clients use a
+  token bucket (Alpaca 3/s with bursts of 12, below its 200/min; Binance 8/s) and retry 429/5xx/
+  network errors with backoff, honouring `Retry-After`.
+- Symbol lists (Alpaca assets without OTC, about 13 000; Binance's trading pairs, about 1 400)
+  and the calendar are kept in the cache file too, refreshed daily/weekly in the background, and
+  loaded at startup. The first request after a fresh install waits for them (Binance's list is
+  6 MB and takes a few seconds).
+- **Splits.** Bars are split-adjusted (`adjustment=split`), so a split rewrites a stock's past
+  prices. Once a day per symbol the service asks Alpaca for splits since its last check (2 days of
+  margin) and drops the symbol's cached bars when there was one. A request waits at most 2 s for
+  that check (it goes on in the background).
+- Failed loads (symbol lists, calendar, split checks) are not retried for 2 minutes, so an
+  upstream outage does not turn every request into a multi-megabyte download attempt.
+- Every answer of `/api/market` carries `X-Market-Api: 1`. Anything else at that path (market
+  data turned off, a static host's `index.html`, a proxy's error page) means "no market server":
+  crypto then falls back to Binance directly, and markets the server cannot serve (`/markets`,
+  e.g. US stocks without a key) are hidden from search and suggestions.
+- It is a cache: its own file, not in backups, safe to delete (`MARKET_DB_FILE`, default
+  `$DATA_DIR/market.sqlite`). A file the server cannot open (corrupt, or a newer schema after a
+  rollback) is replaced by an empty one instead of stopping the server.
+
+### 6.3 US stocks: what the bars are
+
+- **Regular hours only** (9:30–16:00 New York). Alpaca's bars include pre- and post-market
+  trades; those bars are dropped.
+- 1/5/15-minute bars are Alpaca's own. **Hourly and 4-hour bars are built from 30-minute bars**:
+  Alpaca's hourly bars are clock-aligned (9:00–10:00 mixes pre-market with the open).
+- Daily bars are Alpaca's: official open and close, volume of the whole day including
+  pre/post-market.
+- The closing auction prints at 16:00:00, so it falls into the post-market minute and is **not in
+  intraday bars** (AAPL on 2026-09-24: 5.1 M shares in the 16:00 minute). The daily bar has it.
+- Axis and crosshair show New York time (`timeFormat.ts`). Bar times stay absolute UTC.
+
+### 6.4 Live updates
+
+- Crypto: straight from Binance's stream on each device (the fastest path; unchanged code).
+- US stocks: the app polls `/api/market/bars?limit=3` once a minute, 35 s after it turns (the
+  data trails by the delay plus the 30 s margin, so each poll sees the minute that just ended), and
+  when the app becomes visible again. Alpaca's stream was rejected: it allows one connection per
+  account (a dev server, the home server and trading bots would take it from each other), and
+  with minute bars 15 minutes late it delivers the same data. A failed poll shows
+  "Reconnecting"; the next success makes the feed backfill what it missed.
+- The top bar shows "15m delayed" for delayed data.
+
+### 6.5 In the app
+
+- **`MarketDataProvider`**: `prepare(symbol, timeframe)` (symbol details + bar clock; the US
+  calendar is loaded once) + `fetchCandles(request)` + `subscribeCandles(symbol, timeframe, listener)`,
+  normalized `Candle` (ms open time, numbers, `closed` flag). The `Workspace` prepares a chart
+  before starting its feed (retried every 10 s if the server cannot answer); switching charts
+  aborts a pending preparation.
+- **Markets of a page load** (`runtimeConfig.createMarkets`): the server (default); `?provider=mock`
+  (a crypto and a US-like mock market); `?provider=binance` (crypto from Binance directly, no
+  server). In the default mode crypto history falls back to Binance directly when the server is
+  unreachable (not when it answers with an error).
+- **Symbol search** (`SymbolSearch.tsx`): the server ranks exact symbols (and a coin's pairs:
+  "btc" means Bitcoin) first, then symbols and names starting with the query; recent symbols are
+  kept on the device.
 - **`CandleSeries`**:
   - Merge semantics: a closed bar never regresses; between open versions the higher trade count
     or volume wins. This handles out-of-order REST vs stream data.
@@ -502,6 +620,8 @@ rewrite.
 | Palm rejection thresholds | Constants in one place (`PALM`, `NAV`); tuned on hardware. |
 | Handwriting misclassification | Handwriting toggle. Glyph vs ink only changes zoom behaviour, never position. |
 | Binance geo-blocking (HTTP 451, e.g. US) | Market-data-only host first; provider interface allows swapping. |
+| Alpaca changes its free plan (limits, the 15-minute rule, the calendar/assets endpoints) | All Alpaca calls are in `server/market/alpaca.ts`; the market id `us` is vendor-neutral, so another vendor plugs in without touching drawings. |
+| Bar cache grows without bound | Only what is viewed is cached: ~70 bytes per bar, e.g. one year of 1-minute bars ≈ 7 MB per stock, ≈ 35 MB per crypto pair. Deleting `market.sqlite` is always safe. |
 | `node:sqlite` is still experimental in Node 24 | The image pins Node 24; all SQL sits behind `DrawingStore` (one file), so a switch to `better-sqlite3` stays local. |
 | Cloudflare Tunnel/Access behaviour (idle timeouts, login redirects, manifest fetch) | Heartbeats every 25 s, redirect detection, credentialed manifest; still to be checked on the real setup (DEVICE_TESTING §6). |
 
@@ -518,10 +638,23 @@ rewrite.
 - **Handwriting vs drawing** is a heuristic, with a toggle to turn it off. Changing an existing
   drawing's kind after the fact is not implemented.
 - **Eraser** removes whole strokes. There is no partial (pixel) erasing.
-- **Scales:** times are shown in UTC (the library default). A log price scale is not supported,
+- **Scales:** crypto times are shown in UTC, US stocks in New York time (no local-time option). A log price scale is not supported,
   because `Viewport` uses a linear price mapping behind a `PriceMapping` interface.
-- **Scope:** only BTCUSDT/ETHUSDT and six timeframes. Sharing drawings across timeframes is
-  modelled but not exposed in the UI.
+- **Scope:** six timeframes. Sharing drawings across timeframes is modelled but not exposed in
+  the UI.
+- **US stocks:**
+  - regular hours only (no pre/post-market option yet);
+  - the cache has no eviction (see §9 for its size);
+  - the closing auction's volume is not in intraday bars (§6.3);
+  - 15 minutes delayed on the free plan, and live bars arrive once a minute;
+  - two decimals for every stock (sub-dollar stocks show rounded prices);
+  - a long stretch without any bar (a halted stock, or thousands of minutes without trades) can end
+    the loading of older history early: a request collects at most 4 chunks, and an empty page
+    tells the app that history is exhausted;
+  - no indices (SPX, VIX) or futures: ETFs such as SPY and QQQ stand in;
+  - **drawings are not rescaled after a split**: the cached bars are, so drawings on a stock that
+    split sit at the old price level (the server's `updated_at` of each drawing says which price
+    basis it was drawn in, so a rescale can be added later).
 - **Binance** returns HTTP 451 in restricted jurisdictions (e.g. the US). Error bodies are
   CORS-opaque, so the exact reason can't be shown in the browser.
 - **No accounts:** anyone who can reach the sync server can read and change the drawings. Keep it
@@ -550,11 +683,22 @@ rewrite.
 | One WebSocket (`ws`) for live rows and previews | Server-sent events + POST; polling | Two-way (previews), one connection per device, works through Cloudflare Tunnel |
 | TypeScript 6.0 | TypeScript 7 | typescript-eslint requires < 6.1 |
 | perfect-freehand for all ink | Constant-width polylines | Handwriting quality; 0.08 µs/pt makes per-frame outlines affordable |
+| US stocks from Alpaca's free plan, delayed but consolidated | Real-time IEX (free); Massive/Polygon, Twelve Data, Finnhub, Yahoo free tiers | Volume from every exchange matters more than 15 minutes; IEX had 4.3 % of the volume. The others: end-of-day only, ~5 % of the volume, no candles, or unofficial. Upgrade path: the same API in real time ($99/month) is `ALPACA_FEED=sip`. |
+| Market data through the server's bar cache | Each device fetches from the upstream (and caches in IndexedDB) | The Alpaca key stays on the server; history fetched once serves every device; charts open from the cache; only missing ranges go upstream. |
+| Coverage ranges in the cache | Detect missing bars by gaps between stored bars | Nights, holidays, outages and minutes without trades are indistinguishable from missing data by looking at bars. |
+| US live bars by polling once a minute | Alpaca's WebSocket (delayed_sip works on the free plan) | One stream connection per account; the data is minute bars 15 minutes late either way. |
+| Session-aware bar clock shared by server and app (`shared/`) | Linear extrapolation; server-generated future times | The future area and gap detection must follow the same calendar the server buckets with. |
+| Regular-hours hourly bars built from 30-minute bars | Alpaca's hourly bars | Those are clock-aligned and mix pre-market into the 9:00 bar. |
 
 ## 12. Verification strategy
 
-- **Unit (Vitest)**: time mapping, viewport, candle merge/gaps, feed recovery, REST pacing/backoff,
-  stream reconnection, QuickShape, classification, store/undo, palm/navigation logic, sync engine.
+- **Unit (Vitest)**: time mapping (also across sessions), viewport, candle merge/gaps, feed recovery
+  (with session clocks), REST pacing/backoff, stream reconnection, QuickShape, classification,
+  store/undo, palm/navigation logic, sync engine, the market API client and polling provider.
+- **Market-data server (Vitest)**: session clocks (DST, weekends, early closes, next/prev inverse),
+  the bar cache and its coverage, regular-hours bucketing, the service against fake upstreams
+  (only missing ranges fetched, forming bar reuse, exchange gaps, the 15-minute rule, split purge,
+  thinly traded stocks, symbol ranking) and the HTTP API (validation, 401/404/502/503).
 - **Sync server (Vitest)**: SQLite store, HTTP API, WebSocket hub, static serving, and the client
   transport against a real in-process server (see §7, Verification).
 - **Browser (Playwright, Chromium)**:
@@ -564,6 +708,10 @@ rewrite.
   - mouse navigation/drawing;
   - persistence across reload; screenshot PNG content and clipboard;
   - the Binance code path against mocked REST/WebSocket (`page.route`, `page.routeWebSocket`).
+- **Browser (Playwright, Chromium), markets**: US mock sessions (regular hours only; a drawing in
+  the future area stays on its bar over the weekend; symbol search switches markets), the server
+  path with a mocked API (history from the server, live from Binance, fallback when unreachable,
+  errors shown).
 - **Browser (Playwright, WebKit)**: iPad-like context (DPR 2, iPad user agent, synthetic pointer
   events) covering drawing, QuickShape, panning, anchoring, pixels, persistence and export. This
   shows engine compatibility, not Apple Pencil behaviour.
