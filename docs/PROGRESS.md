@@ -20,7 +20,7 @@ Resume here in a new session. Newest notes at the top of each section.
 | 12 | Final verification + independent review | ✅ done (21 review findings fixed, 15 with a regression test) |
 | 13 | Physical device testing (iPad + Apple Pencil, Galaxy + S Pen) | ✅ tested by the user on an iPad Pro (Apple Pencil) and a Galaxy S26 Ultra (S Pen), 2026-09-25: "works just great". The itemized `DEVICE_TESTING.md` results were not recorded. |
 | 14 | Self-hosting: Dockerfile, docker-compose, online backup/restore | ✅ deployed (home server behind Cloudflare Tunnel + Access; image built on a PC and shipped; nightly backups) |
-| 15 | Market data: server bar cache (fetch only what is missing), US stocks and ETFs (Alpaca free plan: every exchange, 15 min delayed, regular hours), every Binance pair, symbol search, trading-session clocks (future area and gaps follow the calendar), New York time axis | ✅ done |
+| 15 | Market data: server bar cache (fetch only what is missing), US stocks and ETFs (Alpaca free plan: every exchange, 15 min delayed, regular hours), every Binance pair, symbol search, trading-session clocks (future area and gaps follow the calendar), New York time axis | ✅ deployed 2026-09-25 (1087971) |
 
 ## Verification snapshot (2026-09-25, market data)
 
@@ -46,6 +46,11 @@ Resume here in a new session. Newest notes at the top of each section.
 
 ## Log
 
+- 2026-09-25 (market data, deployed): 1087971 runs on the home server with the Alpaca key in its
+  `.env`. Checked on the LAN: health, session (drawings intact: the existing BTCUSDT 1h drawings are
+  still served under `binance`), markets, bars, search; the first US request after the restart took
+  13 s (it waited for the symbol lists being loaded at startup), repeats 80 ms; memory about
+  100 MB of the 256 MB limit; the public hostname still answers with the Access login.
 - 2026-09-25 (market data): faster data and more instruments.
   - Data sources compared (current docs): Alpaca's free plan is the only free source of US stock
     bars with volume from every exchange (15 minutes delayed); its real-time IEX feed saw 4.3 % of
