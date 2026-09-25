@@ -14,7 +14,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test",
-    "e2e:install": "playwright install chromium webkit"
+    "e2e:install": "playwright install chromium webkit",
+    "icons": "pwa-assets-generator"
   },
   "dependencies": {
     "ws": "^8.21.3"

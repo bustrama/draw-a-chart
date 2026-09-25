@@ -1,12 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Source of every PNG/ICO icon (`npm run icons`). Full-bleed on purpose: the same tile is the
+       Windows/desktop icon and the Android maskable icon, so all ink stays inside the maskable
+       safe zone (a circle of radius 205 around the centre). -->
   <rect width="512" height="512" fill="#0b0e13"/>
-  <g stroke-linecap="round">
-    <line x1="150" y1="150" x2="150" y2="330" stroke="#ef5350" stroke-width="10"/>
-    <rect x="128" y="190" width="44" height="100" rx="6" fill="#ef5350"/>
-    <line x1="232" y1="120" x2="232" y2="290" stroke="#26a69a" stroke-width="10"/>
-    <rect x="210" y="150" width="44" height="100" rx="6" fill="#26a69a"/>
-    <line x1="314" y1="170" x2="314" y2="340" stroke="#26a69a" stroke-width="10"/>
-    <rect x="292" y="200" width="44" height="100" rx="6" fill="#26a69a"/>
+  <g stroke-linecap="round" stroke-width="20">
+    <path d="M152 148v178" stroke="#ef5350"/>
+    <path d="M250 108v174" stroke="#26a69a"/>
+    <path d="M348 162v190" stroke="#26a69a"/>
   </g>
-  <path d="M104 390c56-8 98-78 150-92s84 26 154-38" fill="none" stroke="#ffd166" stroke-width="22" stroke-linecap="round"/>
+  <rect x="120" y="188" width="64" height="102" rx="12" fill="#ef5350"/>
+  <rect x="218" y="142" width="64" height="108" rx="12" fill="#26a69a"/>
+  <rect x="316" y="196" width="64" height="104" rx="12" fill="#26a69a"/>
+  <path d="M116 380c58-8 100-80 150-92s84 24 136-38" fill="none" stroke="#ffd166" stroke-width="32" stroke-linecap="round"/>
 </svg>

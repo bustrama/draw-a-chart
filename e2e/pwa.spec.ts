@@ -30,4 +30,38 @@ test.describe('PWA (production build)', () => {
     await expect(page.getByTestId('tool-pen')).toBeVisible();
     await context.setOffline(false);
   });
+
+  test('every icon is an opaque full-bleed tile', async ({ page }) => {
+    await page.goto('/?provider=mock&mockLive=0&test=1');
+    await expect(page.getByTestId('chart-host')).toBeVisible();
+
+    // A transparent or white margin around the tile shows up as a frame on Android (maskable
+    // icon) and iOS (touch icon): each icon's corners must be the opaque manifest background.
+    const { background, icons } = await page.evaluate(async () => {
+      const manifestUrl = new URL(document.querySelector('link[rel="manifest"]')!.getAttribute('href')!, location.href);
+      const manifest = await (await fetch(manifestUrl)).json();
+      const entries: { url: URL; sizes: string }[] = manifest.icons.map((i: { src: string; sizes: string }) => ({
+        url: new URL(i.src, manifestUrl),
+        sizes: i.sizes,
+      }));
+      entries.push({ url: new URL(document.querySelector('link[rel="apple-touch-icon"]')!.getAttribute('href')!, location.href), sizes: '180x180' });
+      const icons = [];
+      for (const { url, sizes } of entries) {
+        const blob = await (await fetch(url)).blob();
+        const bitmap = await createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+        const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d')!;
+        ctx.drawImage(bitmap, 0, 0);
+        const [w, h] = [bitmap.width - 1, bitmap.height - 1];
+        const corners = [[0, 0], [w, 0], [0, h], [w, h]].map(([x, y]) => Array.from(ctx.getImageData(x, y, 1, 1).data));
+        icons.push({ path: url.pathname, sizes, actual: `${bitmap.width}x${bitmap.height}`, corners });
+      }
+      return { background: manifest.background_color as string, icons };
+    });
+    const rgba = [1, 3, 5].map((i) => parseInt(background.slice(i, i + 2), 16)).concat(255);
+    expect(icons.length).toBeGreaterThanOrEqual(5);
+    for (const icon of icons) {
+      expect(icon.actual, icon.path).toBe(icon.sizes);
+      expect(icon.corners, icon.path).toEqual([rgba, rgba, rgba, rgba]);
+    }
+  });
 });

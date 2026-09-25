@@ -42,6 +42,20 @@ Resume here in a new session. Newest notes at the top of each section.
 
 ## Log
 
+- 2026-09-25 (app icon): the installed app's icon sat in a frame. The icon generator's defaults
+  (`@vite-pwa/assets-generator`, preset `minimal-2023`) put the already full-bleed tile on a white
+  background with 30% padding for the maskable (Android) and Apple touch icons, and left a
+  transparent margin around the others (desktop Chrome).
+  - `pwa-assets.config.ts` generates every icon with no padding and the app background;
+    `npm run icons` regenerates them from `public/logo.svg`. File names are unchanged, so the
+    Access bypass still covers them.
+  - `logo.svg` is redrawn with bolder candles and pen stroke for small sizes, with all ink inside
+    the maskable safe zone, so one tile serves as both the desktop and the Android icon.
+    `favicon.svg` shows the same glyph on a rounded tile.
+  - New PWA E2E test: every manifest icon and the touch icon has its declared size and opaque,
+    background-coloured corners (it fails on the old icons).
+  - Not checked on a device. An already-installed app keeps the old icon until it is reinstalled
+    (after accepting the update prompt, since the service worker precaches the icons).
 - 2026-09-24 (self-hosted): Supabase replaced by a self-hosted sync server, for one user, no
   accounts, running on your own server behind Cloudflare Zero Trust. The Supabase version is the
   first commit in Git.

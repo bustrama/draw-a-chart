@@ -89,7 +89,7 @@ hardware before it can be called verified. Record results in the table at the en
 | 6.7 | Installed PWA: new version deployed (`docker compose up -d --build`) | "A new version is available" prompt; never auto-reloads mid-stroke |
 | 6.8 | Leave the app open on the iPad for 10+ minutes idle, then draw on another device | Still arrives live (the connection survives Cloudflare's idle timeout) |
 | 6.9 | With Cloudflare Access: let the Access session expire (or revoke it), then draw — in the browser and in the installed app | The sync panel offers **Sign in again**; it leads through the Access login back into the app, syncing resumes, and nothing drawn meanwhile is lost |
-| 6.10 | Installed PWA behind Cloudflare Access | Installation works (manifest loads); the installed app starts offline |
+| 6.10 | Installed PWA behind Cloudflare Access | Installation works (manifest loads); the home-screen icon is the full dark tile, with no white frame (Android masks it to its launcher shape); the installed app starts offline |
 | 6.11 | `docker compose restart` while two devices are open | Both reconnect by themselves within ~30 s; drawings made meanwhile arrive |
 | 6.12 | Restore a backup (README) while devices hold newer drawings, then open the app on them | The backup's drawings are back; drawings created after the backup reappear once each device that has them reconnects |
 
