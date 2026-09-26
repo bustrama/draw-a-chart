@@ -2,7 +2,8 @@
 
 Personal stylus-first charting PWA for Wyckoff study: **pen draws, fingers navigate, mouse navigates**
 (mouse draws only in explicit mouse-draw mode). React 19 + TS 6 + Vite 8 + Lightweight Charts 5.2 +
-perfect-freehand + market data (crypto: Binance Spot; US stocks: Alpaca, free plan, 15 min delayed)
+perfect-freehand + market data (crypto: Binance Spot; US stocks: Alpaca, free plan, 15 min delayed;
+futures: Yahoo Finance, unofficial, 10 min delayed)
 through a self-hosted server that also syncs drawings (Node 24, SQLite, WebSocket; one Docker container). Public repo: never commit credentials, tokens, `.env` files or personal data.
 
 Read before changing anything substantial:
@@ -23,8 +24,8 @@ npm start            # production server: dist/ + sync + market APIs on port 808
 docker compose up -d --build   # the self-hosted deployment
 ```
 
-URL switches: `?market=us&symbol=AAPL&tf=1h` (open a chart), `?provider=mock&mockNow=<ms>&mockLive=0`
-(deterministic data: a crypto and a US-like market), `?provider=binance` (crypto from Binance directly, no
+URL switches: `?market=us&symbol=AAPL&tf=1h` (open a chart; markets `binance`, `us`, `futures`),
+`?provider=mock&mockNow=<ms>&mockLive=0` (deterministic data: crypto-, US- and futures-like markets), `?provider=binance` (crypto from Binance directly, no
 server), `?test=1` (exposes `window.__dac` in prod builds; always on in dev), `?sync=off` (local-only page load).
 
 ## Architectural invariants (do not break)
@@ -44,10 +45,12 @@ server), `?test=1` (exposes `window.__dac` in prod builds; always on in dev), `?
 - Market data layer stays chart-agnostic; drawing engine stays React-agnostic.
 - **Bar times come from the market's bar clock** (`shared/sessions.ts`): the chart's future area
   (`TimeIndex`), gap detection (`CandleSeries`/`CandleFeed`) and the server's bucketing all use it. Never
-  assume a bar every `tf.ms` for stocks (nights, weekends, holidays, 9:30-aligned hourly bars).
+  assume a bar every `tf.ms` for stocks (nights, weekends, holidays, 9:30-aligned hourly bars) or
+  futures (sessions open at 18:00 the evening before their trade date: `open < day`).
 - **Bar cache:** the server stores closed bars and marks the range complete (coverage) in one
   transaction; the forming bar is never cached. A drawing's namespace is the market id (`binance`,
-  `us`), never the data vendor.
+  `us`, `futures`), never the data vendor. The cache also archives futures history Yahoo no
+  longer serves: never delete `market.sqlite` casually (an unusable one is moved aside).
 - **The Alpaca key lives only in the server's environment** (`APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`):
   never with a `VITE_` prefix, in responses, logs, the repo or chat.
 - **Sync:** the client/server contract is `src/sync/protocol.ts` (types only). The server decides who

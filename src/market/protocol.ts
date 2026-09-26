@@ -3,9 +3,10 @@
  * server. Types only, and no imports: the server imports this file with `import type`, which
  * Node's type stripping erases.
  *
- * Markets: 'binance' (crypto spot pairs, around the clock) and 'us' (US stocks and ETFs,
- * regular hours, consolidated volume). The server caches closed bars and fetches only what is
- * missing from the upstream provider; the forming bar is always fetched fresh.
+ * Markets: 'binance' (crypto spot pairs, around the clock), 'us' (US stocks and ETFs, regular
+ * hours, consolidated volume) and 'futures' (continuous front-month contracts, CME Globex hours).
+ * The server caches closed bars and fetches only what is missing from the upstream provider; the
+ * forming bar is always fetched fresh.
  */
 
 /** [open time (Unix ms), open, high, low, close, volume, closed (1) or still forming (0)] */
@@ -58,7 +59,10 @@ export interface SearchResponse {
   readonly results: readonly SymbolMatch[];
 }
 
-/** One regular session: [day (midnight, exchange time), open, close], Unix ms. */
+/**
+ * One regular session: [day (midnight of the trade date, exchange time), open, close], Unix ms.
+ * Futures sessions open the evening before their trade date (open < day).
+ */
 export type WireSession = readonly [number, number, number];
 
 /** `GET /api/market/calendar?market`: the market's regular sessions, oldest first. */

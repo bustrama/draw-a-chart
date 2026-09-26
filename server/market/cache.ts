@@ -41,7 +41,8 @@ const MIGRATIONS: readonly string[] = [
  * bars for (nights, before a listing, exchange outages) are covered too, so they are never
  * requested again.
  *
- * It is a cache: its own file, never backed up, safe to delete (it refills on demand).
+ * Its own file, never backed up: deleting it only costs a refetch, except for the futures history
+ * Yahoo no longer serves (MarketService.archiveFutures), which only the cache keeps.
  */
 export class BarCache {
   private readonly db: DatabaseSync;
@@ -84,6 +85,11 @@ export class BarCache {
     }
     this.ids.set(key, row.id);
     return row.id;
+  }
+
+  /** Symbols of a market with a series (charted at least once). */
+  symbols(market: string): string[] {
+    return (this.db.prepare('select distinct symbol from series where market = ? order by symbol').all(market) as Array<{ symbol: string }>).map((r) => r.symbol);
   }
 
   /** Stored bars with open times in [from, to], oldest first. */

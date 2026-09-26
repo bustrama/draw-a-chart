@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { globexSessions, SessionCalendar } from '../../shared/sessions.ts';
 import type { AlpacaTimeframe, CalendarRow, StockSymbol } from './alpaca.ts';
 import type { CryptoSymbol } from './binance.ts';
 import { BarCache, type Bar } from './cache.ts';
-import { MarketError, MarketService, type CryptoUpstream, type OutBar, type StockUpstream } from './service.ts';
+import { MarketError, MarketService, type CryptoUpstream, type FuturesUpstream, type OutBar, type StockUpstream } from './service.ts';
 import { UpstreamError } from './upstream.ts';
+import type { YahooInterval } from './yahoo.ts';
 
 const MIN = 60_000;
 const H = 60 * MIN;
+const DAY = 24 * H;
 const z = (iso: string) => Date.parse(iso);
 const hhmm = (bars: readonly OutBar[]) => bars.map((b) => `${new Date(b.t).toISOString().slice(5, 16)}${b.closed ? '' : '*'}`);
 
@@ -102,6 +105,7 @@ class FakeStocks implements StockUpstream {
       { symbol: 'AAPL', name: 'Apple Inc. Common Stock', exchange: 'NASDAQ' },
       { symbol: 'MLP', name: 'Maui Land & Pineapple Company', exchange: 'NYSE' },
       { symbol: 'BTC', name: 'Grayscale Bitcoin Mini Trust', exchange: 'ARCA' },
+      { symbol: 'ES', name: 'Eversource Energy', exchange: 'NYSE' },
     ];
   }
   async splits(_symbol: string, start: string, end: string): Promise<string[]> {
@@ -111,16 +115,61 @@ class FakeStocks implements StockUpstream {
   }
 }
 
+const GLOBEX = new SessionCalendar(globexSessions('2018-01-01', '2027-12-31'));
+const YAHOO_MS: Record<YahooInterval, number> = { '1m': MIN, '5m': 5 * MIN, '15m': 15 * MIN, '60m': H, '1d': DAY };
+const YAHOO_DAYS: Record<YahooInterval, number | null> = { '1m': 29, '5m': 59, '15m': 59, '60m': 729, '1d': null };
+
+/**
+ * Yahoo-like futures: bars every interval during Globex hours, daily bars at New York midnight of
+ * each trade date (volume 100), 10 minutes late, and intraday history only that many days back.
+ */
+class FakeYahoo implements FuturesUpstream {
+  readonly delayMs = 10 * MIN;
+  /** Volume of every intraday bar (daily bars: 100). */
+  volume = 1;
+  readonly calls: Array<{ ticker: string; interval: YahooInterval; start: number; end: number }> = [];
+  private readonly clock: Clock;
+  constructor(clock: Clock) {
+    this.clock = clock;
+  }
+  historyStart(interval: YahooInterval): number | null {
+    const days = YAHOO_DAYS[interval];
+    return days === null ? null : this.clock.t - days * DAY;
+  }
+  async bars(ticker: string, interval: YahooInterval, start: number, end: number): Promise<Bar[]> {
+    this.calls.push({ ticker, interval, start, end });
+    const from = Math.max(start, this.historyStart(interval) ?? start);
+    const newest = this.clock.t - this.delayMs;
+    const out: Bar[] = [];
+    if (interval === '1d') {
+      for (const s of GLOBEX.sessions) if (s.day >= from && s.day <= end && s.open <= newest) out.push({ t: s.day, o: 10, h: 11, l: 9, c: 10, v: 100 });
+      return out;
+    }
+    const ms = YAHOO_MS[interval];
+    for (let t = Math.ceil(from / ms) * ms; t <= Math.min(end, newest); t += ms) if (GLOBEX.sessionAt(t)) out.push({ t, o: 10, h: 11, l: 9, c: 10, v: this.volume });
+    return out;
+  }
+}
+
 const caches: BarCache[] = [];
-function setup(nowIso: string, options: { alpaca?: boolean } = {}) {
+function setup(nowIso: string, options: { alpaca?: boolean; yahoo?: boolean } = {}) {
   const clock = new Clock(nowIso);
   const cache = new BarCache(':memory:');
   caches.push(cache);
   const crypto = new FakeCrypto(clock);
   const stocks = new FakeStocks(clock);
+  const yahoo = new FakeYahoo(clock);
   const logs: string[] = [];
-  const service = new MarketService({ cache, binance: crypto, alpaca: options.alpaca === false ? null : stocks, now: clock.now, log: (m) => logs.push(m), splitCheckWaitMs: 50 });
-  return { clock, cache, crypto, stocks, service, logs };
+  const service = new MarketService({
+    cache,
+    binance: crypto,
+    alpaca: options.alpaca === false ? null : stocks,
+    yahoo: options.yahoo === false ? null : yahoo,
+    now: clock.now,
+    log: (m) => logs.push(m),
+    splitCheckWaitMs: 50,
+  });
+  return { clock, cache, crypto, stocks, yahoo, service, logs };
 }
 
 afterEach(() => {
@@ -274,6 +323,143 @@ describe('MarketService: US stocks', () => {
     expect(bars.length).toBeLessThanOrEqual(50);
     expect(stocks.calls.length).toBeGreaterThan(1);
     for (let i = 1; i < bars.length; i++) expect(bars[i].t).toBeGreaterThan(bars[i - 1].t);
+  });
+});
+
+describe('MarketService: futures', () => {
+  // Monday 28 Sep 2026, 10:40 New York: Yahoo's data reaches 10:30; the session opened on Sunday at
+  // 18:00 (22:00Z).
+  const MONDAY = '2026-09-28T14:40:00Z';
+  const ES = { market: 'futures', symbol: 'ES' };
+
+  it('follows Globex hours: the evening session, no weekend, no daily break', async () => {
+    const { yahoo, service } = setup(MONDAY);
+    const bars = await service.bars({ ...ES, tf: '1h', limit: 20 });
+    const times = hhmm(bars);
+    expect(times).toHaveLength(20);
+    expect(times.slice(0, 5)).toEqual(['09-25T18:00', '09-25T19:00', '09-25T20:00', '09-27T22:00', '09-27T23:00']);
+    expect(times.slice(-2)).toEqual(['09-28T13:00', '09-28T14:00*']);
+    expect(yahoo.calls.every((c) => c.ticker === 'ES=F' && c.interval === '60m')).toBe(true);
+  });
+
+  it('builds daily bars from the hourly ones, the evening hours in the next trade date', async () => {
+    const { yahoo, service } = setup(MONDAY);
+    const bars = await service.bars({ ...ES, tf: '1d', limit: 3 });
+    expect(hhmm(bars)).toEqual(['09-24T04:00', '09-25T04:00', '09-28T04:00*']);
+    // 23 hours a day; Monday so far: Sunday 18:00-24:00 and Monday 0:00-10:00.
+    expect(bars.map((b) => b.v)).toEqual([23, 23, 17]);
+    expect(yahoo.calls.every((c) => c.interval === '60m')).toBe(true);
+  });
+
+  it("takes Yahoo's daily bars only where its hourly history does not reach", async () => {
+    const { yahoo, service } = setup(MONDAY);
+    // Yahoo's hourly history starts Sunday 29 Sep 2024, 10:40 New York: Monday 30 Sep is the first
+    // trade date built from hourly bars.
+    const bars = await service.bars({ ...ES, tf: '1d', limit: 6, end: z('2024-10-02T12:00:00Z') });
+    expect(hhmm(bars)).toEqual(['09-25T04:00', '09-26T04:00', '09-27T04:00', '09-30T04:00', '10-01T04:00', '10-02T04:00']);
+    expect(bars.map((b) => b.v)).toEqual([100, 100, 100, 23, 23, 23]);
+    const old = await service.bars({ ...ES, tf: '1d', limit: 3, end: z('2023-09-28T00:00:00Z') });
+    expect(hhmm(old)).toEqual(['09-25T04:00', '09-26T04:00', '09-27T04:00']);
+    expect(yahoo.calls.at(-1)?.interval).toBe('1d');
+  });
+
+  it('builds 4-hour bars from the 18:00 open', async () => {
+    const { service } = setup(MONDAY);
+    const bars = await service.bars({ ...ES, tf: '4h', limit: 3 });
+    expect(hhmm(bars)).toEqual(['09-28T06:00', '09-28T10:00', '09-28T14:00*']);
+    expect(bars[0].v).toBe(4);
+  });
+
+  it("stops where Yahoo's history does, without asking again", async () => {
+    const { yahoo, service } = setup(MONDAY);
+    const req = { ...ES, tf: '1m' as const, limit: 100, end: z('2026-08-10T15:00:00Z') }; // 49 days ago
+    expect(await service.bars(req)).toEqual([]);
+    const calls = yahoo.calls.length;
+    expect(await service.bars(req)).toEqual([]);
+    expect(yahoo.calls).toHaveLength(calls);
+  });
+
+  it("archives every timeframe of the symbols charted so far, before Yahoo's history moves on", async () => {
+    const { clock, cache, yahoo, service } = setup(MONDAY);
+    await service.bars({ ...ES, tf: '1h', limit: 3 });
+    await service.archiveFutures();
+    const oneMinute = cache.series('futures', 'ES', '1m');
+    const covered = cache.coverage(oneMinute);
+    expect(covered).toHaveLength(1);
+    expect(covered[0][0]).toBeLessThanOrEqual(z(MONDAY) - 28 * DAY);
+    expect(cache.range(oneMinute, z('2026-09-14T00:00:00Z'), z('2026-09-14T23:59:00Z')).length).toBe(23 * 60); // a day but the 17:00-18:00 break
+    expect(new Set(yahoo.calls.map((c) => c.interval))).toEqual(new Set(['1m', '5m', '15m', '60m']));
+
+    // Nothing new yet: only the last day again, one request per timeframe (for daily bars:
+    // Thursday's and Friday's, from Wednesday's evening open).
+    const calls = yahoo.calls.length;
+    await service.archiveFutures();
+    expect(yahoo.calls).toHaveLength(calls + 6);
+    for (const c of yahoo.calls.slice(calls)) expect(c.start).toBeGreaterThanOrEqual(z('2026-09-23T22:00:00Z'));
+
+    clock.t += DAY;
+    const before = yahoo.calls.length;
+    await service.archiveFutures();
+    // Only what closed since and the day before it (Monday's daily bar from its Sunday evening open).
+    for (const c of yahoo.calls.slice(before)) expect(c.start).toBeGreaterThanOrEqual(z('2026-09-27T22:00:00Z'));
+  });
+
+  it('stores the last day again when archiving: Yahoo may have been late', async () => {
+    const { cache, yahoo, service } = setup(MONDAY);
+    await service.bars({ ...ES, tf: '1h', limit: 5 });
+    await service.archiveFutures();
+    const hourly = cache.series('futures', 'ES', '1h');
+    const bar = z('2026-09-28T12:00:00Z');
+    expect(cache.range(hourly, bar, bar)[0].v).toBe(1);
+    yahoo.volume = 9; // what Yahoo says now about the same hours
+    await service.archiveFutures();
+    expect(cache.range(hourly, bar, bar)[0].v).toBe(9);
+    expect(cache.range(hourly, z('2026-09-20T12:00:00Z'), z('2026-09-20T12:00:00Z'))).toEqual([]); // a Sunday
+    expect(cache.range(hourly, z('2026-09-18T12:00:00Z'), z('2026-09-18T12:00:00Z'))[0].v).toBe(1); // older: kept
+  });
+
+  it("builds no 4-hour bar from hours before Yahoo's hourly history", async () => {
+    const { service } = setup(MONDAY);
+    // Yahoo's hourly history starts Sunday 29 Sep 2024 at 10:40 New York (planning with a day to spare).
+    const bars = await service.bars({ ...ES, tf: '4h', limit: 50, start: z('2024-09-20T00:00:00Z'), end: z('2024-10-01T00:00:00Z') });
+    expect(hhmm(bars)[0]).toBe('09-29T22:00'); // the first session opening after it: Sunday 18:00
+    expect(bars.every((b) => b.v === 4 || b.t === z('2024-09-30T18:00:00Z'))).toBe(true); // 14:00-17:00 has 3 hours
+  });
+
+  it('asks nothing for dates before a contract has data', async () => {
+    const { yahoo, service } = setup(MONDAY);
+    const bars = await service.bars({ market: 'futures', symbol: 'MES', tf: '1d', limit: 5, end: z('2019-05-08T12:00:00Z') });
+    expect(hhmm(bars)).toEqual(['05-03T04:00', '05-06T04:00', '05-07T04:00', '05-08T04:00']);
+    for (const c of yahoo.calls) expect(c.start).toBeGreaterThanOrEqual(z('2019-05-03T04:00:00Z'));
+  });
+
+  it('loads no symbol list for futures at startup', async () => {
+    const { stocks, service, logs, cache } = setup(MONDAY);
+    service.warmUp();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(stocks.assetCalls).toBe(1);
+    expect(cache.getMeta('symbols:futures')).toBeNull();
+    expect(logs.filter((l) => l.includes('futures'))).toEqual([]);
+  });
+
+  it('describes, finds and schedules futures', async () => {
+    const { service } = setup(MONDAY);
+    expect(await service.symbol('futures', 'ES')).toMatchObject({ name: 'E-mini S&P 500', minMove: 0.25, pricePrecision: 2, timeZone: 'America/New_York', delayMs: 10 * MIN, sessions: true });
+    expect(await service.symbol('futures', 'NOPE')).toBeNull();
+    const ids = async (q: string) => (await service.search(q)).map((r) => `${r.market}:${r.symbol}`);
+    expect((await ids('es')).slice(0, 2)).toEqual(['futures:ES', 'us:ES']);
+    expect(await ids('crude')).toEqual(['futures:CL']);
+    const sessions = await service.sessions('futures');
+    expect(sessions.every(([day, open, close]) => open < day && day < close)).toBe(true);
+    expect(sessions.find(([day]) => day === z('2026-09-28T04:00:00Z'))).toEqual([z('2026-09-28T04:00:00Z'), z('2026-09-27T22:00:00Z'), z('2026-09-28T21:00:00Z')]);
+    expect(service.markets().find((m) => m.id === 'futures')?.available).toBe(true);
+  });
+
+  it('can be turned off', async () => {
+    const { service } = setup(MONDAY, { yahoo: false });
+    await expect(service.bars({ ...ES, tf: '1h', limit: 5 })).rejects.toMatchObject({ status: 503 });
+    expect(service.markets().find((m) => m.id === 'futures')?.available).toBe(false);
+    expect((await service.search('es')).map((r) => r.market)).not.toContain('futures');
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { barsBetween, DAY_MS, fixedClock, NEW_YORK, SessionCalendar, sessionsFromCalendar, stepBack, stepForward, zonedDate, zonedTime } from './sessions.ts';
+import { barsBetween, DAY_MS, fixedClock, globexSessions, NEW_YORK, SessionCalendar, sessionsFromCalendar, stepBack, stepForward, zonedDate, zonedTime } from './sessions.ts';
 
 const MIN = 60_000;
 const H = 60 * MIN;
@@ -42,6 +42,7 @@ describe('time zones', () => {
     const [a, b] = cal.sessions;
     expect(() => new SessionCalendar([b, a])).toThrow();
     expect(() => new SessionCalendar([{ ...a, close: a.open }])).toThrow();
+    expect(() => new SessionCalendar([{ ...a, day: a.close }])).toThrow();
   });
 });
 
@@ -140,6 +141,60 @@ describe('daily clock', () => {
       const n = d.next(t);
       expect(d.prev(n)).toBe(t);
       t = n;
+    }
+  });
+});
+
+describe('futures sessions (CME Globex)', () => {
+  // Fri 25 and Mon 28 Sep 2026 (EDT: 18:00 = 22:00Z), and around the end of daylight saving time
+  // (Sun 1 Nov 2026; EST: 18:00 = 23:00Z).
+  const fut = new SessionCalendar(globexSessions('2026-09-21', '2026-11-06'));
+  const day = (date: string) => zonedTime(date, '00:00', NEW_YORK);
+  const find = (date: string) => fut.sessions.find((s) => s.day === day(date));
+
+  it('opens the evening before each trade date, Monday to Friday', () => {
+    expect(find('2026-09-28')).toEqual({ day: z('2026-09-28T04:00:00Z'), open: z('2026-09-27T22:00:00Z'), close: z('2026-09-28T21:00:00Z') });
+    expect(find('2026-09-26')).toBeUndefined();
+    expect(find('2026-09-27')).toBeUndefined();
+    expect(find('2026-11-02')).toEqual({ day: z('2026-11-02T05:00:00Z'), open: z('2026-11-01T23:00:00Z'), close: z('2026-11-02T22:00:00Z') });
+    expect(find('2026-10-30')).toEqual({ day: z('2026-10-30T04:00:00Z'), open: z('2026-10-29T22:00:00Z'), close: z('2026-10-30T21:00:00Z') });
+  });
+
+  it('runs intraday bars across midnight and skips the daily break and the weekend', () => {
+    const h1 = fut.clock(H);
+    const h4 = fut.clock(4 * H);
+    expect(h1.bucket(z('2026-09-28T03:30:00Z'))).toBe(z('2026-09-28T03:00:00Z')); // Sunday 23:30 New York
+    expect(h1.bucket(z('2026-09-28T21:30:00Z'))).toBeNull(); // 17:30: the daily break
+    expect(h1.next(z('2026-09-28T20:00:00Z'))).toBe(z('2026-09-28T22:00:00Z')); // 16:00 -> 18:00
+    expect(h1.next(z('2026-09-25T20:00:00Z'))).toBe(z('2026-09-27T22:00:00Z')); // Friday 16:00 -> Sunday 18:00
+    expect(h1.prev(z('2026-09-27T22:00:00Z'))).toBe(z('2026-09-25T20:00:00Z'));
+    // 4-hour bars from the 18:00 open: 18, 22, 2, 6, 10 and 14 (until the 17:00 close).
+    expect(h4.bucket(z('2026-09-28T05:00:00Z'))).toBe(z('2026-09-28T02:00:00Z'));
+    expect(h4.bucket(z('2026-09-28T20:30:00Z'))).toBe(z('2026-09-28T18:00:00Z'));
+    expect(h4.end(z('2026-09-28T18:00:00Z'))).toBe(z('2026-09-28T21:00:00Z'));
+    expect(barsBetween(h4, z('2026-09-27T22:00:00Z'), z('2026-09-28T22:00:00Z'))).toBe(5);
+  });
+
+  it("counts the evening hours into the next trade date's daily bar", () => {
+    const d = fut.clock(DAY_MS, true);
+    expect(d.bucket(z('2026-09-27T22:30:00Z'))).toBe(day('2026-09-28')); // Sunday 18:30
+    expect(d.bucket(z('2026-09-28T20:59:00Z'))).toBe(day('2026-09-28')); // Monday 16:59
+    expect(d.bucket(z('2026-09-28T21:30:00Z'))).toBeNull(); // the daily break
+    expect(d.bucket(z('2026-09-28T22:30:00Z'))).toBe(day('2026-09-29')); // Monday 18:30: Tuesday's bar
+    expect(d.latest(z('2026-09-27T23:00:00Z'))).toBe(day('2026-09-28')); // started on Sunday evening
+    expect(d.latest(z('2026-09-27T12:00:00Z'))).toBe(day('2026-09-25'));
+    expect(d.end(day('2026-09-28'))).toBe(z('2026-09-28T21:00:00Z'));
+    expect(d.next(day('2026-09-25'))).toBe(day('2026-09-28'));
+    expect(d.prev(day('2026-09-28'))).toBe(day('2026-09-25'));
+  });
+
+  it('keeps next and prev inverse across weekends and the change of daylight saving time', () => {
+    for (const clock of [fut.clock(H), fut.clock(4 * H), fut.clock(DAY_MS, true)]) {
+      const end = fut.sessions[fut.sessions.length - 1].close;
+      for (let t = clock.next(fut.sessions[0].open - 1), n = clock.next(t); n < end; t = n, n = clock.next(t)) {
+        expect(clock.prev(n)).toBe(t);
+        expect(clock.bucket(n)).toBe(n);
+      }
     }
   });
 });

@@ -11,11 +11,13 @@
  *   ALLOWED_ORIGINS  comma-separated extra origins allowed to open the live connection (only
  *               needed when a proxy rewrites the Host header)
  *   MARKET_DATA 'off' disables /api/market (the app then has no market data from this server)
- *   MARKET_DB_FILE   bar cache (default $DATA_DIR/market.sqlite; a cache: safe to delete, not backed up)
+ *   MARKET_DB_FILE   bar cache (default $DATA_DIR/market.sqlite; not backed up: it refills, except the
+ *               futures history older than Yahoo's, which only it keeps)
  *   APCA_API_KEY_ID, APCA_API_SECRET_KEY   Alpaca key for US stocks (a free paper-account key works)
  *   ALPACA_FEED delayed_sip (default: every exchange, 15 min late: the free plan), sip (real time,
  *               paid) or iex (one exchange, real time)
  *   ALPACA_TRADING_URL  trading API host for the calendar and asset list (default: by key type)
+ *   FUTURES_DATA 'off' disables futures (Yahoo Finance: unofficial, 10 min late, no key)
  *   REQUEST_LOG '1' logs one line per request (path, status, request kind, browser family, how long
  *               a login proxy's access token is valid; never tokens, cookies or identities)
  */
@@ -49,7 +51,7 @@ const server = await startServer({
 console.log(`[draw-a-chart] ${version} listening on port ${server.port} (database: ${dbFile})`);
 console.log(
   market
-    ? `[draw-a-chart] market data: crypto (Binance), ${market.alpaca ? `US stocks (Alpaca, ${market.alpaca.feed})` : 'no US stocks (set APCA_API_KEY_ID and APCA_API_SECRET_KEY)'}; cache ${market.dbFile}`
+    ? `[draw-a-chart] market data: crypto (Binance), ${market.alpaca ? `US stocks (Alpaca, ${market.alpaca.feed})` : 'no US stocks (set APCA_API_KEY_ID and APCA_API_SECRET_KEY)'}, ${market.futures === false ? 'no futures (FUTURES_DATA=off)' : 'futures (Yahoo)'}; cache ${market.dbFile}`
     : '[draw-a-chart] market data off (MARKET_DATA=off)',
 );
 

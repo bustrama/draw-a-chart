@@ -21,6 +21,7 @@ Resume here in a new session. Newest notes at the top of each section.
 | 13 | Physical device testing (iPad + Apple Pencil, Galaxy + S Pen) | ✅ tested by the user on an iPad Pro (Apple Pencil) and a Galaxy S26 Ultra (S Pen), 2026-09-25: "works just great". The itemized `DEVICE_TESTING.md` results were not recorded. |
 | 14 | Self-hosting: Dockerfile, docker-compose, online backup/restore | ✅ deployed (home server behind Cloudflare Tunnel + Access; image built on a PC and shipped; nightly backups) |
 | 15 | Market data: server bar cache (fetch only what is missing), US stocks and ETFs (Alpaca free plan: every exchange, 15 min delayed, regular hours), every Binance pair, symbol search, trading-session clocks (future area and gaps follow the calendar), New York time axis | ✅ deployed 2026-09-25 (1087971) |
+| 16 | Futures: 15 CME Group contracts (ES, NQ, YM, RTY and micros, CL, NG, GC, MGC, SI, HG, 6E) from Yahoo Finance (continuous front month, Globex hours, 10 min delayed), 4-hour/daily bars from hourly, an archive that keeps Yahoo's expiring intraday history | ✅ built 2026-09-26, not deployed yet |
 
 ## Verification snapshot (2026-09-25, market data)
 
@@ -46,6 +47,55 @@ Resume here in a new session. Newest notes at the top of each section.
 
 ## Log
 
+- 2026-09-26 (futures): the user asked for ES. Alpaca has no futures data (stocks, options, crypto
+  only; its futures broker registered in August 2026 but has not started), so futures come from
+  Yahoo Finance's chart API: free, no key, unofficial, 10 minutes delayed.
+  - Checked against Yahoo on 2026-09-26: 1-minute bars 30 days back (8 per request), 5/15 minutes
+    60 days, hourly 730 days, daily since 2000; older requests get HTTP 422. `ES=F` is the stitched
+    front month: it moved from September to December on Monday 14 September around 11:00 New York
+    (about 65 points higher); Yahoo's daily series moved at expiry (the 18th) instead, and its
+    Friday daily volume was a copy of Thursday's. Hence 4-hour and daily bars from hourly ones.
+  - The newest row of every Yahoo answer is the latest trade (off the grid, no volume); it is
+    folded into its bar.
+  - `shared/sessions.ts`: a session may open before its trade date (`open < day`);
+    `globexSessions`; the daily bucket starts at the evening open.
+  - Server: `futures` market (`futures.ts`, `yahoo.ts`, `MarketService.futuresBars`), the
+    futures calendar (computed, 2000 to two years ahead; the app gets it from 2015-12), search ranks
+    futures first among equals ("ES" is the E-mini, then Eversource), `FUTURES_DATA=off`.
+  - Archive (`MarketService.archiveFutures`, 2 min after startup, then every 12 h): every timeframe
+    of each future charted so far, within Yahoo's history. Live run against Yahoo: ES in 20 s,
+    57 000 bars, 3 MB.
+  - An unusable `market.sqlite` is now moved aside (`.unusable`), not deleted: it holds history
+    nobody else has.
+  - App: Futures market (server and mock), ES and NQ in the suggestions, "10m delayed".
+  - Tests: sessions (Globex), Yahoo parsing, service (futures, archive), API, 4 browser tests.
+  - Independent review (two reviewers: server logic; app, protocol and docs), all fixed:
+    - **Yahoo sends the first row of every intraday answer without volume** (checked live), so
+      every newly closed bar would have been cached with volume 0 (one request per poll starts at
+      it). Requests now start 30 bars early and drop those rows; test added.
+    - Before a contract's first day Yahoo answers 400 "Data doesn't exist": the micros
+      (2019-05-03), RTY (2017), MGC (2010) and YM (2002) broke older pages. Each contract now has
+      `dataFrom`, and that 400 counts as no data. Micro WTI dropped (Yahoo has no daily history).
+    - A 4-hour bar at the start of Yahoo's hourly history was built from some of its hours.
+    - Ranges were planned from Yahoo's history start and clamped again later: the service now plans
+      a day inside the limit and requests go to the limit.
+    - Closing bars by the clock alone could cache a late Yahoo bar incomplete: the archive now
+      fetches the last day again and stores it over the cache; it also takes the series lock per
+      step instead of for a whole walk (a first 1-minute run held it for ~27 requests).
+    - Warm-up treated futures as a market with a symbol list (downloaded Alpaca's assets twice, or
+      logged an error without a key).
+    - Intraday futures axes put day and month marks at UTC midnight (20:00 New York):
+      `ZonedTimeScale` weighs tick marks in the exchange's zone (`createChartEx`).
+    - Open futures charts never saw bars become final (the poll covered 3 bars, the settle 10
+      minutes): polls now cover `revisableMs`.
+    - An updated app offered futures against a server without them (rollback): markets the server
+      does not list are hidden.
+    - An unusable cache is moved aside with a timestamp (a second incident no longer overwrites the
+      first); the mock no longer repeats a daily bar when paging futures history; stale docs.
+    - Yahoo caveats documented (ARCHITECTURE §6.4): no volume on the first bar after the daily
+      break (18:00, Monday to Thursday), no 1-minute rows around midnight New York, a late-day
+      price row that only the range filter keeps out.
+    - A second review of the fixes found them correct (docs wording fixed).
 - 2026-09-26 (Access login on the Galaxy): the app asked to sign in for sync, and **Sign in
   again** only reloaded it. The server was fine (sync answered on the LAN, the service worker leaves
   `/api/` to the network). Deleting the site's cookies in Chrome and signing in fixed it.
@@ -250,7 +300,13 @@ Resume here in a new session. Newest notes at the top of each section.
 - Market data: a pre/post-market option for stocks; rescale drawings after a stock split (the
   cache is rescaled, drawings are not; ARCHITECTURE §10); price precision for sub-dollar stocks;
   the closing auction in the last intraday bar; real-time US data when trading starts
-  (`ALPACA_FEED=sip` on the paid plan, or a broker feed such as IBKR); indices/futures.
+  (`ALPACA_FEED=sip` on the paid plan, or a broker feed such as IBKR); indices.
+- Futures: measure Yahoo's real delay once trading reopens (assumed 10 min: bars are cached 20 min
+  after they end, and the archive re-fetches the last day); the missing 18:00 volume (e.g. from
+  5-minute bars where they exist); exchange holidays in the Globex calendar; a back-adjusted series or single
+  contract months; building 4-hour/daily bars from the cached hourly series instead of fetching
+  hourly bars again; real-time data when trading starts (broker feed or Databento behind the same
+  `futures` market id); back up `market.sqlite` on the server (it now holds the archive).
 - Device testing on iPad + Galaxy Tab per `DEVICE_TESTING.md`; tune `PALM`, `NAV`, `QUICKSHAPE`,
   `HANDWRITING` constants from the results.
 - Deployed behind the Cloudflare Tunnel + Access (2026-09-25): run the sync checks in

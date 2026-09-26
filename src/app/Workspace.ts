@@ -13,7 +13,7 @@ import { clockFor, getTimeframe } from '../market/timeframes';
 import type { BarClock, MarketDataProvider, SymbolInfo, Timeframe, TimeframeId } from '../market/types';
 
 export interface MarketSelection {
-  /** Market id in the registry ('binance', 'us'). */
+  /** Market id in the registry ('binance', 'us', 'futures'). */
   readonly market: string;
   readonly symbol: string;
   readonly timeframe: TimeframeId;

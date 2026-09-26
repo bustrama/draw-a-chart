@@ -1,12 +1,14 @@
 import {
   CandlestickSeries,
   ColorType,
-  createChart,
+  createChartEx,
   createTextWatermark,
   CrosshairMode,
   HistogramSeries,
   LineStyle,
   type CandlestickData,
+  type ChartOptions,
+  type DeepPartial,
   type HistogramData,
   type IChartApi,
   type ISeriesApi,
@@ -20,7 +22,7 @@ import {
 import type { CandleSeries, SeriesChange } from '../market/candleSeries';
 import type { BarClock, Candle, SymbolInfo } from '../market/types';
 import { THEME } from './theme';
-import { timeFormatters } from './timeFormat';
+import { timeFormatters, ZonedTimeScale } from './timeFormat';
 import { TimeIndex } from './timeIndex';
 import { LinearPriceMapping, Viewport } from './viewport';
 
@@ -74,6 +76,7 @@ export class ChartController {
   readonly chart: IChartApi;
   readonly candles: ISeriesApi<'Candlestick'>;
   readonly volume: ISeriesApi<'Histogram'>;
+  private readonly timeScale: ZonedTimeScale;
   private readonly container: HTMLElement;
   private clock: BarClock;
   private timeIndex = TimeIndex.EMPTY;
@@ -99,7 +102,10 @@ export class ChartController {
     this.clock = options.clock;
     this.onNeedOlder = options.onNeedOlder;
     const time = timeFormatters(options.symbol.timeZone, isDaily(options.clock));
-    this.chart = createChart(container, {
+    this.timeScale = new ZonedTimeScale();
+    this.timeScale.timeZone = options.symbol.timeZone ?? 'UTC';
+    // What createChart() does, with our time scale (and the date format it adds by default).
+    const chartOptions: DeepPartial<ChartOptions> = {
       autoSize: true,
       layout: {
         background: { type: ColorType.Solid, color: THEME.background },
@@ -107,7 +113,7 @@ export class ChartController {
         fontFamily: THEME.fontFamily,
         fontSize: 11,
       },
-      localization: { timeFormatter: time.timeFormatter },
+      localization: { dateFormat: "dd MMM 'yy", timeFormatter: time.timeFormatter },
       grid: {
         vertLines: { color: THEME.grid },
         horzLines: { color: THEME.grid },
@@ -142,7 +148,8 @@ export class ChartController {
         axisDoubleClickReset: { time: true, price: true },
       },
       kineticScroll: { mouse: false, touch: false },
-    });
+    };
+    this.chart = createChartEx(container, this.timeScale, chartOptions) as IChartApi;
 
     // Volume first so candles (and the drawings attached to them) paint on top.
     this.volume = this.chart.addSeries(HistogramSeries, {
@@ -185,6 +192,9 @@ export class ChartController {
       priceFormat: { type: 'price', precision: symbol.pricePrecision, minMove: symbol.minMove },
     });
     const time = timeFormatters(symbol.timeZone, isDaily(clock));
+    // Before the new data: its tick marks are weighed in this zone. (A symbol switch replaces the
+    // data from its first bar, so every mark is weighed again.)
+    this.timeScale.timeZone = symbol.timeZone ?? 'UTC';
     this.chart.applyOptions({ localization: { timeFormatter: time.timeFormatter }, timeScale: { tickMarkFormatter: time.tickMarkFormatter } });
     this.watermark.applyOptions({ lines: [{ text: watermark, color: THEME.watermark, fontSize: 56, fontStyle: '600' }] });
     this.candles.priceScale().setAutoScale(true);

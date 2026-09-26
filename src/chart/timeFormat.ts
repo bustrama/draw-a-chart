@@ -1,4 +1,5 @@
-import { TickMarkType, type Time, type TickMarkFormatter } from 'lightweight-charts';
+import { defaultHorzScaleBehavior, TickMarkType, type Mutable, type Time, type TickMarkFormatter, type TimeScalePoint } from 'lightweight-charts';
+import { offsetAt } from '../../shared/sessions.ts';
 
 export interface TimeFormatters {
   /** Time-axis labels. */
@@ -10,10 +11,9 @@ export interface TimeFormatters {
 const cache = new Map<string, TimeFormatters>();
 
 /**
- * Axis and crosshair labels in the exchange's time zone (New York for US stocks, UTC for crypto).
- * Bar times stay absolute UTC timestamps; only the labels change. Lightweight Charts picks tick
- * positions from UTC calendar boundaries, which works because a US session never crosses UTC
- * midnight and New York's offset is a whole number of hours.
+ * Axis and crosshair labels in the exchange's time zone (New York for stocks and futures, UTC for
+ * crypto). Bar times stay absolute UTC timestamps; only the labels change. Which bars get a day,
+ * month or year mark is decided by `ZonedTimeScale` in the same zone.
  */
 export function timeFormatters(timeZone = 'UTC', daily = false): TimeFormatters {
   const key = `${timeZone}|${daily}`;
@@ -57,4 +57,55 @@ export function timeFormatters(timeZone = 'UTC', daily = false): TimeFormatters 
   };
   cache.set(key, formatters);
   return formatters;
+}
+
+const TimeScaleBase = defaultHorzScaleBehavior();
+
+/**
+ * Lightweight Charts' time scale with tick marks weighed in the exchange's time zone: day, month
+ * and year marks go where the date changes there, not in UTC. (Futures sessions run across UTC
+ * midnight, which is 20:00 in New York: UTC weights put the day mark in the evening.) Bar times
+ * stay absolute UTC timestamps. Set `timeZone` before replacing the data.
+ */
+export class ZonedTimeScale extends TimeScaleBase {
+  private zone = 'UTC';
+  /** Offset (s) of the zone per UTC hour: daylight saving time changes on the hour. */
+  private readonly offsets = new Map<number, number>();
+
+  get timeZone(): string {
+    return this.zone;
+  }
+
+  set timeZone(zone: string) {
+    if (zone === this.zone) return;
+    this.zone = zone;
+    this.offsets.clear();
+  }
+
+  override fillWeightsForPoints(points: readonly Mutable<TimeScalePoint>[], startIndex: number): void {
+    if (this.zone === 'UTC' || points.some((p, i) => i >= startIndex - 1 && typeof p.originalTime !== 'number')) {
+      super.fillWeightsForPoints(points, startIndex);
+      return;
+    }
+    // The library weighs by UTC calendar fields: hand it the wall-clock times as if they were UTC.
+    const from = Math.max(0, startIndex - 1);
+    const shifted = points.slice(from).map((p) => ({
+      timeWeight: p.timeWeight,
+      time: this.convertHorzItemToInternal(this.wall(p.originalTime as number) as Time),
+      originalTime: p.originalTime,
+    }));
+    super.fillWeightsForPoints(shifted, startIndex - from);
+    for (let i = startIndex; i < points.length; i++) points[i].timeWeight = shifted[i - from].timeWeight;
+  }
+
+  /** Wall-clock time in the zone, in UTC seconds. */
+  private wall(seconds: number): number {
+    const hour = Math.floor(seconds / 3600);
+    let offset = this.offsets.get(hour);
+    if (offset === undefined) {
+      offset = offsetAt(seconds * 1000, this.zone) / 1000;
+      this.offsets.set(hour, offset);
+    }
+    return seconds + offset;
+  }
 }

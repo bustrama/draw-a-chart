@@ -1,15 +1,18 @@
 /**
  * Trading sessions and bar clocks: which bar open times exist for a market and timeframe.
  *
- * Shared by the server (bucketing US stock bars into regular-hours bars, stepping over nights and
- * holidays) and the app (the chart's future area and telling real data gaps from nights and
- * weekends). Pure functions of UTC milliseconds without imports, so Node runs this file directly
- * (type stripping) and Vite bundles it.
+ * Shared by the server (bucketing US stock bars into regular-hours bars, futures bars into
+ * trading days, stepping over nights and holidays) and the app (the chart's future area and telling
+ * real data gaps from nights and weekends). Pure functions of UTC milliseconds without imports, so
+ * Node runs this file directly (type stripping) and Vite bundles it.
  */
 
-/** One regular trading session. All times are UTC milliseconds. */
+/**
+ * One regular trading session. All times are UTC milliseconds. Stocks open after midnight of their
+ * date; futures open the evening before their trade date (`open` < `day` < `close`).
+ */
 export interface Session {
-  /** Midnight of the session's date in the exchange's time zone: the open time of its daily bar. */
+  /** Midnight of the session's (trade) date in the exchange's time zone: the open time of its daily bar. */
   readonly day: number;
   /** Regular-hours open (inclusive). */
   readonly open: number;
@@ -39,6 +42,7 @@ export interface BarClock {
 }
 
 export const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
 
 /** Bars every `intervalMs`, aligned to the UTC epoch, around the clock (crypto). */
 export function fixedClock(intervalMs: number): BarClock {
@@ -91,16 +95,19 @@ export class SessionCalendar {
   readonly sessions: readonly Session[];
   private readonly opens: Float64Array;
   private readonly days: Float64Array;
+  /** Where each session's daily bar starts taking trades: its date's midnight or its open, the earlier. */
+  private readonly starts: Float64Array;
 
   constructor(sessions: readonly Session[]) {
     for (let i = 0; i < sessions.length; i++) {
       const s = sessions[i];
-      if (!(s.open < s.close) || !(s.day <= s.open)) throw new Error(`invalid session at ${i}`);
-      if (i > 0 && !(sessions[i - 1].close <= s.day)) throw new Error(`sessions out of order at ${i}`);
+      if (!(s.open < s.close) || !(s.day < s.close)) throw new Error(`invalid session at ${i}`);
+      if (i > 0 && !(sessions[i - 1].close <= Math.min(s.day, s.open))) throw new Error(`sessions out of order at ${i}`);
     }
     this.sessions = sessions;
     this.opens = Float64Array.from(sessions, (s) => s.open);
     this.days = Float64Array.from(sessions, (s) => s.day);
+    this.starts = Float64Array.from(sessions, (s) => Math.min(s.day, s.open));
   }
 
   get first(): Session | undefined {
@@ -173,13 +180,15 @@ export class SessionCalendar {
     const sessions = this.sessions;
     const opens = this.opens;
     const days = this.days;
+    const starts = this.starts;
     const n = sessions.length;
     const fixed = fixedClock(DAY_MS);
     return {
       intervalMs: DAY_MS,
       continuous: false,
       bucket(t) {
-        const s = sessions[lastAtOrBefore(days, t, false)];
+        // A futures session's evening hours belong to the next trade date's bar.
+        const s = sessions[lastAtOrBefore(starts, t, false)];
         return s && t < s.close ? s.day : null;
       },
       latest(t) {
@@ -251,7 +260,7 @@ function formatter(timeZone: string): Intl.DateTimeFormat {
 }
 
 /** Offset (ms) of `timeZone` from UTC at instant `t`: local wall time minus UTC. */
-function offsetAt(t: number, timeZone: string): number {
+export function offsetAt(t: number, timeZone: string): number {
   const parts = formatter(timeZone).formatToParts(new Date(t));
   const get = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)?.value ?? 0);
   const wall = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second'));
@@ -274,6 +283,26 @@ export function zonedDate(t: number, timeZone: string): string {
   const parts = formatter(timeZone).formatToParts(new Date(t));
   const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? '';
   return `${get('year')}-${get('month').padStart(2, '0')}-${get('day').padStart(2, '0')}`;
+}
+
+/**
+ * CME Globex hours for futures (stock indices, energy, metals, currencies): the session of each
+ * trade date from `from` to `to` (`YYYY-MM-DD`, Monday to Friday) opens at 18:00 New York time
+ * the evening before (Sunday for Monday) and closes at 17:00. Exchange holidays are not modeled:
+ * their bar slots simply stay empty.
+ */
+export function globexSessions(from: string, to: string): Session[] {
+  const out: Session[] = [];
+  const last = Date.parse(`${to}T00:00:00Z`);
+  for (let d = Date.parse(`${from}T00:00:00Z`); d <= last; d += DAY_MS) {
+    const weekday = new Date(d).getUTCDay();
+    if (weekday === 0 || weekday === 6) continue;
+    const day = zonedTime(new Date(d).toISOString().slice(0, 10), '00:00', NEW_YORK);
+    // Daylight saving time changes on Sundays at 2:00, before the week's first open: one offset
+    // holds from the evening open to the close.
+    out.push({ day, open: day - 6 * HOUR_MS, close: day + 17 * HOUR_MS });
+  }
+  return out;
 }
 
 /** Exchange calendar rows (`date`, `open`, `close` as local wall times) to sessions. */

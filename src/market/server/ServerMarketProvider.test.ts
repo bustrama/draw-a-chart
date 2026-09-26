@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WireSymbol } from '../protocol';
-import { searchLocal, StaticMarketRegistry } from '../registry';
+import { searchLocal, ServerMarketRegistry, StaticMarketRegistry } from '../registry';
 import { FakeProvider } from '../testing/fakes';
 import type { Candle, LiveStatus } from '../types';
 import { MarketApi, MarketApiError } from './marketApi';
@@ -147,6 +147,32 @@ describe('ServerMarketProvider', () => {
     const polls = urls.length;
     await vi.advanceTimersByTimeAsync(180_000);
     expect(urls).toHaveLength(polls);
+  });
+
+  it('polls every bar the server may still revise', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(z('2026-09-28T14:40:30Z'));
+    const { api: a, urls } = api(() => ok({ bars: [] }));
+    const provider = new ServerMarketProvider({ api: a, market: 'futures', name: 'Futures', revisableMs: 10 * 60_000, documentEvents: new EventTarget() });
+    for (const tf of ['1m', '5m', '1h'] as const) {
+      const stop = provider.subscribeCandles('ES', tf, { onCandle: () => undefined });
+      await flushMicrotasksWithTimers();
+      stop();
+    }
+    expect(urls.map((u) => u.searchParams.get('limit'))).toEqual(['12', '4', '3']);
+  });
+});
+
+describe('ServerMarketRegistry', () => {
+  it('hides markets the server does not have, keeps standalone ones', async () => {
+    // An older server (e.g. after a rollback) knows crypto only.
+    const { api: a } = api(() => ok({ markets: [{ id: 'binance', label: 'Crypto', available: true }] }));
+    const registry = new ServerMarketRegistry(a, [
+      { id: 'binance', label: 'Crypto', provider: new FakeProvider(), standalone: true },
+      { id: 'futures', label: 'Futures', provider: new FakeProvider() },
+    ]);
+    await vi.waitFor(() => expect(registry.available('futures')).toBe(false));
+    expect(registry.available('binance')).toBe(true);
   });
 });
 

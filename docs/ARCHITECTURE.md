@@ -13,7 +13,7 @@ reasons behind them, and the platform facts they rest on. Status of each part is
 | Styling | Tailwind CSS 4 | Preferred; tokens in `src/index.css`. |
 | Chart | TradingView Lightweight Charts **5.2** | Fast canvas chart with a documented primitive (plugin) API that lets drawings render *inside* the chart's paint pass. No alternative offered a better input or drawing story. |
 | Ink geometry | `perfect-freehand` 1.2 | Pressure-sensitive stroke outlines; about 0.08 µs per point (30k points ≈ 2.5 ms on desktop). The same code renders live and committed ink, so strokes don't "pop" on commit. |
-| Market data | Crypto: Binance Spot (public, no key). US stocks and ETFs: Alpaca (free plan: every exchange, 15 min delayed). Both behind the self-hosted server's bar cache; crypto live updates straight from Binance's stream | Free sources with consolidated volume (Wyckoff needs real volume). The cache makes charts open instantly and fetches only missing bars. See §6. |
+| Market data | Crypto: Binance Spot (public, no key). US stocks and ETFs: Alpaca (free plan: every exchange, 15 min delayed). Futures: Yahoo Finance (unofficial, no key, 10 min delayed). All behind the self-hosted server's bar cache; crypto live updates straight from Binance's stream | Free sources with consolidated volume (Wyckoff needs real volume). The cache makes charts open instantly and fetches only missing bars. See §6. |
 | Persistence | IndexedDB (`idb`) on each device + a self-hosted sync server: Node 24, SQLite (`node:sqlite`), WebSocket (`ws`), in one Docker container | Local-first; sync is only needed to share drawings between devices. No accounts yet (see §7). |
 | PWA | `vite-plugin-pwa` 1.x (`registerType: 'prompt'`) | Auto-update could reload mid-stroke, so updates are prompted instead. |
 | Tests | Vitest 5 (unit, including the sync server) + Playwright 1.63 (Chromium via CDP for trusted touch/pen input; WebKit iPad-like context; the production server; multi-device sync) | |
@@ -74,9 +74,10 @@ server/              self-hosted sync server (Node 24 runs the TypeScript direct
   validate.ts        request and preview validation
   market/            market data: /api/market/* (§6)
     cache.ts         SQLite bar cache (market.sqlite) with coverage ranges
-    service.ts       bars through the cache, symbol lists, US calendar, split checks
-    binance.ts, alpaca.ts, upstream.ts   upstream clients (rate-limited, retries)
-    sessionBars.ts   regular-hours bars from Alpaca's bars
+    service.ts       bars through the cache, symbol lists, calendars, split checks, futures archive
+    binance.ts, alpaca.ts, yahoo.ts, upstream.ts   upstream clients (rate-limited, retries)
+    futures.ts       the futures offered (continuous front month, Yahoo tickers, ticks)
+    sessionBars.ts   upstream bars to session bars (regular hours, trade dates, 4-hour bars)
     api.ts           HTTP routes and input validation
   static.ts          built app with cache headers, SPA fallback, traversal guard
   vitePlugin.ts      the same API inside `npm run dev`
@@ -303,18 +304,20 @@ rewrite.
 
 ## 6. Market data
 
-Two markets, chosen for free data with **consolidated volume** (volume analysis is the point of
+Three markets, chosen for free data with **consolidated volume** (volume analysis is the point of
 Wyckoff study; a single-exchange feed shows a few percent of it):
 
 | Market id | What | Upstream | Freshness |
 |---|---|---|---|
 | `binance` | every Binance Spot pair | Binance public API, no key | real time |
 | `us` | US stocks and ETFs, regular hours | Alpaca market data, free paper-account key | 15 min delayed (free plan: every exchange, `end` must be ≥ 15 min old); `ALPACA_FEED=sip` with a paid plan |
+| `futures` | 15 CME Group futures (`server/market/futures.ts`), continuous front month, Globex hours | Yahoo Finance's chart API (unofficial), no key | 10 min delayed (CME on Yahoo) |
 
 Measured on the free plan (2026-09-25): AAPL over 2½ hours, the real-time IEX feed saw **4.3 %**
 of the consolidated volume, so real-time-but-partial was rejected in favour of delayed-but-complete.
-The market id is also the drawings' namespace (`ChartKey.provider`): `us`, not `alpaca`, so
-drawings survive a change of data vendor. Existing crypto drawings keep `binance`.
+The market id is also the drawings' namespace (`ChartKey.provider`): `us` and `futures`, not
+`alpaca` or `yahoo`, so drawings survive a change of data vendor (a futures broker's feed when
+trading starts). Existing crypto drawings keep `binance`.
 
 ### 6.1 Bar clocks and trading sessions (`shared/sessions.ts`)
 
@@ -326,6 +329,15 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
   early closes). Intraday bars start at the 9:30 open and repeat until the close; the last one
   can be shorter (hourly: 9:30, 10:30 … 15:30–16:00; 4-hour: 9:30, 13:30). Daily bars open at
   New York midnight (Alpaca's daily timestamps).
+- Futures: `globexSessions`, CME Globex hours for every product offered: each trade date's
+  session opens at 18:00 New York the evening before (Sunday for Monday) and closes at 17:00, so
+  `open < day < close`. Intraday bars start at 18:00 (4-hour: 18, 22, 2, 6, 10, 14, the last until
+  17:00); the daily bar is the trade date, at its New York midnight, and takes the evening hours
+  before it. Exchange holidays are not modeled: a closed day's slots stay empty (at most one extra
+  request when the app checks a gap), and a shortened holiday session (e.g. Labor Day, until about
+  13:00) becomes a short daily bar dated on the holiday, where CME books it to the next trade date.
+  Daylight saving time changes on Sundays at 2:00, before the week's first open, so one offset
+  holds for a whole session.
 - The same file runs on the server (Node type stripping; the image copies `shared/`) and in the
   app, so both agree exactly on bar times. It has no imports; times are UTC ms; New York time is
   converted with `Intl` (verified in the `node:24-alpine` image: full ICU).
@@ -347,12 +359,13 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
   10 s for Binance (clock skew; the exchange finishing the bar); for Alpaca 60 s after the 15-minute
   delay (late trade reports), and for a **daily** bar the end of the extended session (20:00 New
   York), because its volume counts post-market trades. Requests to Alpaca keep `end` 30 s older
-  than the free plan requires (clock skew would otherwise turn into 403s).
+  than the free plan requires (clock skew would otherwise turn into 403s). Futures bars are final
+  10 min after Yahoo's 10-minute delay (so 20 min after they end): Yahoo may report late.
 - Thinly traded stocks have minutes without trades: requests collect up to 4 chunks to fill
   `limit`, and the app does not backfill holes inside server history (`completeHistory`).
 - Requests for one series run one at a time (no duplicate upstream calls). Upstream clients use a
-  token bucket (Alpaca 3/s with bursts of 12, below its 200/min; Binance 8/s) and retry 429/5xx/
-  network errors with backoff, honouring `Retry-After`.
+  token bucket (Alpaca 3/s with bursts of 12, below its 200/min; Binance 8/s; Yahoo 2/s, it
+  publishes no limit) and retry 429/5xx/network errors with backoff, honouring `Retry-After`.
 - Symbol lists (Alpaca assets without OTC, about 13 000; Binance's trading pairs, about 1 400)
   and the calendar are kept in the cache file too, refreshed daily/weekly in the background, and
   loaded at startup. The first request after a fresh install waits for them (Binance's list is
@@ -367,9 +380,12 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
   data turned off, a static host's `index.html`, a proxy's error page) means "no market server":
   crypto then falls back to Binance directly, and markets the server cannot serve (`/markets`,
   e.g. US stocks without a key) are hidden from search and suggestions.
-- It is a cache: its own file, not in backups, safe to delete (`MARKET_DB_FILE`, default
-  `$DATA_DIR/market.sqlite`). A file the server cannot open (corrupt, or a newer schema after a
-  rollback) is replaced by an empty one instead of stopping the server.
+- It is a cache: its own file, not in backups (`MARKET_DB_FILE`, default
+  `$DATA_DIR/market.sqlite`). Deleting it only costs a refetch, except for futures history older
+  than Yahoo's (§6.4), which only the cache keeps (`server/backup.ts` with `DB_FILE` pointing at
+  it backs it up). A file the server cannot open (corrupt, or a newer schema after a rollback) is
+  moved aside (`<file>.unusable-<time>`, with its `-wal`) and an empty one started instead of
+  stopping the server.
 
 ### 6.3 US stocks: what the bars are
 
@@ -381,28 +397,71 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
   pre/post-market.
 - The closing auction prints at 16:00:00, so it falls into the post-market minute and is **not in
   intraday bars** (AAPL on 2026-09-24: 5.1 M shares in the 16:00 minute). The daily bar has it.
-- Axis and crosshair show New York time (`timeFormat.ts`). Bar times stay absolute UTC.
+- Axis and crosshair show New York time (`timeFormat.ts`). Bar times stay absolute UTC. The
+  time scale weighs tick marks in the same zone (`ZonedTimeScale`): Lightweight Charts alone puts
+  day and month marks where the UTC date changes, which for futures is 20:00 New York.
 
-### 6.4 Live updates
+### 6.4 Futures: what the bars are
+
+- **Continuous front month**, as Yahoo stitches it (`ES=F`): it moves to the next contract during
+  roll week (September 2026: Monday the 14th, around 11:00 New York, four days before expiry),
+  **unadjusted**, so price jumps by the calendar spread (about 65 points for ES) between two bars,
+  like TradingView's ES1!. The 4-hour and daily bars that contain the roll mix both contracts.
+- 1/5/15-minute and hourly bars are Yahoo's. **4-hour and daily bars are built from hourly bars**:
+  Yahoo's own daily bars switch contracts on another day (at expiry), so drawings would not line
+  up across timeframes during roll week, and its latest daily volume was a stale copy of the day
+  before (2026-09-25). Hourly bars sum to 3–7 % less volume than Yahoo's daily figure, partly
+  because of the session's first bar (below); every timeframe uses the same data, so they agree.
+- Daily bars for trade dates older than Yahoo's hourly history (two years) are Yahoo's daily bars.
+- Yahoo serves 1-minute bars for 30 days (8 days per request), 5 and 15 minutes for 60 days,
+  hourly for 730 days, daily since 2000 (each contract from its own first day, `dataFrom` in
+  `futures.ts`); it refuses anything older (HTTP 422, or 400 "Data doesn't exist" before a
+  contract's first day). The client asks for none of it: it clamps to Yahoo's limit, and callers
+  plan with a day to spare (`historyStart`), so a range is still served when its request goes out.
+- **Yahoo's volume quirks** (checked live, 2026-09-26):
+  - the first row of every intraday answer has no volume: requests start 30 bars early and drop
+    those rows (without it, every newly closed bar would have been stored with volume 0);
+  - after the daily break (18:00 New York, Monday to Thursday evenings) the session's first bar has
+    no volume wherever it is (the minute, 5 minutes or hour), so hourly-built 4-hour and daily bars
+    of Tuesday to Friday miss the 18:00–19:00 volume. Sunday's open keeps its volume, except the
+    first 1-minute bar (18:10);
+  - 1-minute data has no rows for 23:59 and 00:00–00:08 New York each night (their volume lands in
+    the next row); in 5-minute data the 00:00 bar is empty and 00:05 carries its volume;
+  - the newest row of an answer is the latest trade (time of the trade, no volume): it is folded
+    into the bar it falls in. An answer ending before today also carries today's price at 23:59
+    New York the evening before, after the range: only the range filter in `parseRows` keeps it
+    out, so never loosen it. Rows without prices (breaks, weekends) are skipped.
+- **Archive**: Yahoo drops old intraday history, so twice a day (first run 2 minutes after
+  startup) the server fetches everything its cache is missing within Yahoo's history, for every
+  timeframe of each futures symbol charted so far, one step (1 500 bars) per lock, so charts and
+  polls get in between. Then it fetches the last day again and stores it over the cached bars: a bar
+  is final 20 minutes after it ends by the server's clock alone, so a late or revised Yahoo bar is
+  repaired within 12 hours. ES costs about 3 MB for the first run (57 000 bars, 20 s) and about
+  25 MB a year after that (1-minute bars are most of it).
+- A 4-hour bar is only built when all its hours are within Yahoo's hourly history.
+
+### 6.5 Live updates
 
 - Crypto: straight from Binance's stream on each device (the fastest path; unchanged code).
-- US stocks: the app polls `/api/market/bars?limit=3` once a minute, 35 s after it turns (the
-  data trails by the delay plus the 30 s margin, so each poll sees the minute that just ended), and
-  when the app becomes visible again. Alpaca's stream was rejected: it allows one connection per
+- US stocks and futures: the app polls `/api/market/bars?limit=3` once a minute, 35 s after it
+  turns (the US data trails by the delay plus the 30 s margin, so each poll sees the minute that
+  just ended), and when the app becomes visible again. Futures bars stay revisable for 10 minutes,
+  so their polls cover that span (`revisableMs`: 12 one-minute bars, 4 five-minute bars) and an
+  open chart sees each bar's final version. Alpaca's stream was rejected: it allows one connection per
   account (a dev server, the home server and trading bots would take it from each other), and
   with minute bars 15 minutes late it delivers the same data. A failed poll shows
   "Reconnecting"; the next success makes the feed backfill what it missed.
-- The top bar shows "15m delayed" for delayed data.
+- The top bar shows "15m delayed" (stocks) or "10m delayed" (futures) for delayed data.
 
-### 6.5 In the app
+### 6.6 In the app
 
-- **`MarketDataProvider`**: `prepare(symbol, timeframe)` (symbol details + bar clock; the US
-  calendar is loaded once) + `fetchCandles(request)` + `subscribeCandles(symbol, timeframe, listener)`,
+- **`MarketDataProvider`**: `prepare(symbol, timeframe)` (symbol details + bar clock; each
+  market's calendar is loaded once) + `fetchCandles(request)` + `subscribeCandles(symbol, timeframe, listener)`,
   normalized `Candle` (ms open time, numbers, `closed` flag). The `Workspace` prepares a chart
   before starting its feed (retried every 10 s if the server cannot answer); switching charts
   aborts a pending preparation.
 - **Markets of a page load** (`runtimeConfig.createMarkets`): the server (default); `?provider=mock`
-  (a crypto and a US-like mock market); `?provider=binance` (crypto from Binance directly, no
+  (crypto-, US- and futures-like mock markets); `?provider=binance` (crypto from Binance directly, no
   server). In the default mode crypto history falls back to Binance directly when the server is
   unreachable (not when it answers with an error).
 - **Symbol search** (`SymbolSearch.tsx`): the server ranks exact symbols (and a coin's pairs:
@@ -621,7 +680,8 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
 | Handwriting misclassification | Handwriting toggle. Glyph vs ink only changes zoom behaviour, never position. |
 | Binance geo-blocking (HTTP 451, e.g. US) | Market-data-only host first; provider interface allows swapping. |
 | Alpaca changes its free plan (limits, the 15-minute rule, the calendar/assets endpoints) | All Alpaca calls are in `server/market/alpaca.ts`; the market id `us` is vendor-neutral, so another vendor plugs in without touching drawings. |
-| Bar cache grows without bound | Only what is viewed is cached: ~70 bytes per bar, e.g. one year of 1-minute bars ≈ 7 MB per stock, ≈ 35 MB per crypto pair. Deleting `market.sqlite` is always safe. |
+| Yahoo changes or blocks its unofficial chart API | Futures stop updating; the cached history stays. All Yahoo calls are in `server/market/yahoo.ts` and the market id `futures` is vendor-neutral: a broker feed or Databento replaces it without touching drawings. `FUTURES_DATA=off` turns it off. |
+| Bar cache grows without bound | Only what is viewed is cached, plus the futures archive: ~55–70 bytes per bar, e.g. one year of 1-minute bars ≈ 7 MB per stock, ≈ 35 MB per crypto pair, ≈ 25 MB per future (all timeframes). Deleting `market.sqlite` is safe, but loses futures history older than Yahoo's. |
 | `node:sqlite` is still experimental in Node 24 | The image pins Node 24; all SQL sits behind `DrawingStore` (one file), so a switch to `better-sqlite3` stays local. |
 | Cloudflare Tunnel/Access behaviour (idle timeouts, login redirects, manifest fetch) | Heartbeats every 25 s, redirect detection, credentialed manifest; still to be checked on the real setup (DEVICE_TESTING §6). |
 
@@ -638,7 +698,7 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
 - **Handwriting vs drawing** is a heuristic, with a toggle to turn it off. Changing an existing
   drawing's kind after the fact is not implemented.
 - **Eraser** removes whole strokes. There is no partial (pixel) erasing.
-- **Scales:** crypto times are shown in UTC, US stocks in New York time (no local-time option). A log price scale is not supported,
+- **Scales:** crypto times are shown in UTC, US stocks and futures in New York time (no local-time option). A log price scale is not supported,
   because `Viewport` uses a linear price mapping behind a `PriceMapping` interface.
 - **Scope:** six timeframes. Sharing drawings across timeframes is modelled but not exposed in
   the UI.
@@ -651,10 +711,25 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
   - a long stretch without any bar (a halted stock, or thousands of minutes without trades) can end
     the loading of older history early: a request collects at most 4 chunks, and an empty page
     tells the app that history is exhausted;
-  - no indices (SPX, VIX) or futures: ETFs such as SPY and QQQ stand in;
+  - no indices (SPX, VIX): ETFs such as SPY and QQQ, or the futures, stand in;
   - **drawings are not rescaled after a split**: the cached bars are, so drawings on a stock that
     split sit at the old price level (the server's `updated_at` of each drawing says which price
     basis it was drawn in, so a rescale can be added later).
+- **Futures:**
+  - Yahoo's API is unofficial: no agreement, it may change or block without notice;
+  - 10 minutes delayed, polled once a minute;
+  - continuous front month, unadjusted: prices jump at each roll, and the 4-hour and daily bars
+    of the roll mix both contracts (§6.4); no back-adjusted series, no single contract months;
+  - exchange holidays and early closes are not in the session calendar: closed days leave empty
+    slots, and a shortened holiday session is a short daily bar of its own (CME books it to the
+    next trade date);
+  - 15 products with Globex hours; grains (other hours), Treasuries (prices in 32nds) and Micro WTI
+    (no daily history on Yahoo; CL has the same prices) are left out;
+  - Yahoo reports no volume for the first bar after the daily break (18:00 New York, Monday to
+    Thursday; on hourly bars the whole first hour) and has a hole in 1-minute data around midnight
+    New York (§6.4);
+  - the history before the cache started archiving is Yahoo's: 1-minute bars from 30 days, 5 and
+    15 minutes from 60 days, hourly and 4-hour bars from two years back.
 - **Binance** returns HTTP 451 in restricted jurisdictions (e.g. the US). Error bodies are
   CORS-opaque, so the exact reason can't be shown in the browser.
 - **No accounts:** anyone who can reach the sync server can read and change the drawings. Keep it
@@ -689,6 +764,9 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
 | US live bars by polling once a minute | Alpaca's WebSocket (delayed_sip works on the free plan) | One stream connection per account; the data is minute bars 15 minutes late either way. |
 | Session-aware bar clock shared by server and app (`shared/`) | Linear extrapolation; server-generated future times | The future area and gap detection must follow the same calendar the server buckets with. |
 | Regular-hours hourly bars built from 30-minute bars | Alpaca's hourly bars | Those are clock-aligned and mix pre-market into the 9:00 bar. |
+| Futures from Yahoo Finance (free, unofficial, 10 min late) | Alpaca (no futures data; its futures broker, registered August 2026, has not started); Databento, broker feeds (IBKR, Tradovate) | Free and delayed is enough until trading starts; the others need an account and exchange fees. Upgrade path: another upstream behind the same `futures` market id. |
+| Futures 4-hour and daily bars built from hourly bars | Yahoo's own daily bars | Same contract on every timeframe at every moment (Yahoo's daily bars roll on another day; drawings are shared across timeframes); its latest daily volume was stale. |
+| Archive Yahoo's intraday history in the cache | Cache only what is viewed | Yahoo drops 1-minute bars after 30 days; "fetch only what is missing" needs the missing part to still exist upstream. |
 
 ## 12. Verification strategy
 
@@ -698,7 +776,15 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
 - **Market-data server (Vitest)**: session clocks (DST, weekends, early closes, next/prev inverse),
   the bar cache and its coverage, regular-hours bucketing, the service against fake upstreams
   (only missing ranges fetched, forming bar reuse, exchange gaps, the 15-minute rule, split purge,
-  thinly traded stocks, symbol ranking) and the HTTP API (validation, 401/404/502/503).
+  thinly traded stocks, symbol ranking), futures (Globex sessions across midnight and DST, daily
+  bars from hourly ones and from Yahoo's before its hourly history, 4-hour bars from 18:00 and none
+  from partial hours, the end of Yahoo's history, nothing before a contract's data, the archive and
+  its re-fetch of the last day, no symbol list loaded at startup), Yahoo's answers (the volume-less
+  first row dropped, empty rows, the latest-trade row, history limits, "no data" as empty, errors)
+  and the HTTP API (validation, 401/404/502/503, an unusable cache moved aside).
+- **App (Vitest)**: tick marks weighed in the exchange's time zone (`ZonedTimeScale`), polls that
+  cover the bars the server may still revise, markets an older server does not have, the mock's
+  paging of futures daily bars.
 - **Sync server (Vitest)**: SQLite store, HTTP API, WebSocket hub, static serving, and the client
   transport against a real in-process server (see §7, Verification).
 - **Browser (Playwright, Chromium)**:
@@ -709,7 +795,9 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
   - persistence across reload; screenshot PNG content and clipboard;
   - the Binance code path against mocked REST/WebSocket (`page.route`, `page.routeWebSocket`).
 - **Browser (Playwright, Chromium), markets**: US mock sessions (regular hours only; a drawing in
-  the future area stays on its bar over the weekend; symbol search switches markets), the server
+  the future area stays on its bar over the weekend; symbol search switches markets), futures mock
+  sessions (bars across midnight, no daily break or weekend, trade-date daily bars, the future-area
+  drawing over the weekend, the symbol search opens a future), the server
   path with a mocked API (history from the server, live from Binance, fallback when unreachable,
   errors shown).
 - **Browser (Playwright, WebKit)**: iPad-like context (DPR 2, iPad user agent, synthetic pointer

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -37,7 +37,7 @@ async function server(crypto = new FakeCrypto(), identifyAs: string | null = 'lo
     host: '127.0.0.1',
     identify: () => (identifyAs ? { userId: identifyAs } : null),
     log: () => undefined,
-    market: { dbFile: ':memory:', upstreams: { binance: crypto, alpaca: null }, now: () => NOW, warmUp: false },
+    market: { dbFile: ':memory:', upstreams: { binance: crypto, alpaca: null, yahoo: null }, now: () => NOW, warmUp: false },
   });
   servers.push(s);
   return s;
@@ -68,6 +68,7 @@ describe('market API', () => {
       markets: [
         { id: 'binance', label: 'Crypto', available: true },
         { id: 'us', label: 'US stocks', available: false },
+        { id: 'futures', label: 'Futures', available: false },
       ],
     });
     expect((await get(s, '/api/market/search?q=btc')).status).toBe(200);
@@ -89,6 +90,7 @@ describe('market API', () => {
       ['/api/market/bars?market=us&symbol=AAPL&tf=1h&limit=10', 503],
       ['/api/market/calendar?market=binance', 404], // crypto trades around the clock
       ['/api/market/calendar?market=us', 503], // no Alpaca key
+      ['/api/market/calendar?market=futures', 503], // futures off
       ['/api/market/nothing', 404],
     ];
     for (const [path, status] of cases) {
@@ -128,10 +130,11 @@ describe('market API', () => {
     db.exec('pragma user_version = 99'); // e.g. written by a newer version before a rollback
     db.close();
     const logs: string[] = [];
-    const s = await startServer({ host: '127.0.0.1', log: (m) => logs.push(m), market: { dbFile: file, upstreams: { binance: new FakeCrypto(), alpaca: null }, now: () => NOW, warmUp: false } });
+    const s = await startServer({ host: '127.0.0.1', log: (m) => logs.push(m), market: { dbFile: file, upstreams: { binance: new FakeCrypto(), alpaca: null, yahoo: null }, now: () => NOW, warmUp: false } });
     servers.push(s);
     expect((await get(s, '/api/market/bars?market=binance&symbol=BTCUSDT&tf=1h&limit=3')).status).toBe(200);
     expect(logs.some((l) => l.includes('unusable'))).toBe(true);
+    expect(readdirSync(dir).some((f) => f.startsWith('market.sqlite.unusable-'))).toBe(true); // moved aside, not deleted
     await s.close();
     servers.splice(servers.indexOf(s), 1);
     rmSync(dir, { recursive: true, force: true });

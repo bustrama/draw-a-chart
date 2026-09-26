@@ -113,9 +113,11 @@ export class HttpClient {
 async function errorReason(res: Response): Promise<string> {
   const text = await res.text().catch(() => '');
   try {
-    const body = JSON.parse(text) as { message?: unknown; msg?: unknown };
-    const message = typeof body.message === 'string' ? body.message : typeof body.msg === 'string' ? body.msg : null;
-    if (message) return `HTTP ${res.status} (${message})`;
+    const body = JSON.parse(text) as { message?: unknown; msg?: unknown; chart?: { error?: { description?: unknown } } };
+    // Alpaca: message; Binance: msg; Yahoo: chart.error.description.
+    const yahoo = body.chart?.error?.description;
+    const message = typeof body.message === 'string' ? body.message : typeof body.msg === 'string' ? body.msg : typeof yahoo === 'string' ? yahoo : null;
+    if (message) return `HTTP ${res.status} (${message.slice(0, 200)})`;
   } catch {
     // not JSON
   }

@@ -4,7 +4,7 @@ import { MarketApiError, type MarketApi } from './marketApi';
 
 export interface ServerMarketProviderOptions {
   readonly api: MarketApi;
-  /** Market id on the server ('binance', 'us'); also the drawings' namespace. */
+  /** Market id on the server ('binance', 'us', 'futures'); also the drawings' namespace. */
   readonly market: string;
   readonly name: string;
   /** Live updates from this provider (Binance's own stream); otherwise the server is polled. */
@@ -13,6 +13,11 @@ export interface ServerMarketProviderOptions {
   readonly fallback?: MarketDataProvider;
   /** Polling period for live updates from the server (default: every minute, just after it turns). */
   readonly pollMs?: number;
+  /**
+   * How long after its end the server may still revise a bar (its settle margin): each poll covers
+   * that span, so an open chart sees every bar's final version. Default: one minute.
+   */
+  readonly revisableMs?: number;
   readonly now?: () => number;
   /** For 'visibilitychange': poll right away when the app comes back. */
   readonly documentEvents?: EventTarget & { readonly visibilityState?: string };
@@ -30,7 +35,7 @@ const POLL_OFFSET_MS = 35_000;
  * A market served by the self-hosted server (`/api/market/*`): history comes from the server's
  * bar cache (it fetches only what it is missing upstream), symbol details and trading sessions
  * too. Live updates come from another provider (Binance's stream, straight from the device) or
- * from polling the server once a minute (US stocks: the data is delayed and minute-based anyway).
+ * from polling the server once a minute (stocks and futures: the data is delayed anyway).
  */
 export class ServerMarketProvider implements MarketDataProvider {
   readonly id: string;
@@ -93,6 +98,7 @@ export class ServerMarketProvider implements MarketDataProvider {
    */
   private poll(symbol: string, timeframe: TimeframeId, listener: LiveCandleListener): () => void {
     const { api, market } = this.o;
+    const limit = Math.max(POLL_BARS, Math.ceil((this.o.revisableMs ?? 0) / getTimeframe(timeframe).ms) + 2);
     const now = this.o.now ?? (() => Date.now());
     const documentEvents = this.o.documentEvents ?? (typeof document !== 'undefined' ? document : undefined);
     let stopped = false;
@@ -115,7 +121,7 @@ export class ServerMarketProvider implements MarketDataProvider {
       const abort = new AbortController();
       inFlight = abort;
       try {
-        const bars = await api.bars({ market, symbol, timeframe, limit: POLL_BARS, signal: abort.signal });
+        const bars = await api.bars({ market, symbol, timeframe, limit, signal: abort.signal });
         if (stopped) return;
         if (failed) {
           failed = false;

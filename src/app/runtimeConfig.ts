@@ -1,5 +1,5 @@
 import { BinanceProvider } from '../market/binance/provider';
-import { MOCK_STOCK_SYMBOLS, MockProvider, mockUsCalendar } from '../market/mock/MockProvider';
+import { MOCK_FUTURES_SYMBOLS, MOCK_STOCK_SYMBOLS, mockFuturesCalendar, MockProvider, mockUsCalendar } from '../market/mock/MockProvider';
 import { ServerMarketRegistry, StaticMarketRegistry, type MarketRegistry } from '../market/registry';
 import { MarketApi } from '../market/server/marketApi';
 import { ServerMarketProvider } from '../market/server/ServerMarketProvider';
@@ -9,8 +9,8 @@ import type { MarketSelection } from './Workspace';
 
 /**
  * URL switches (useful for offline work and deterministic browser tests):
- *   ?market=us&symbol=AAPL&tf=1h   open a chart (market: 'binance' (default) or 'us')
- *   ?provider=mock            synthetic data instead of the server (a crypto and a US-like market)
+ *   ?market=us&symbol=AAPL&tf=1h   open a chart (market: 'binance' (default), 'us' or 'futures')
+ *   ?provider=mock            synthetic data instead of the server (crypto-, US- and futures-like markets)
  *   &mockNow=<ms>             freeze the mock clock (fully reproducible bars)
  *   &mockLive=0               disable mock live updates
  *   ?provider=binance         crypto straight from Binance's public API (no server)
@@ -21,7 +21,7 @@ export function readParams(): URLSearchParams {
   return new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
 }
 
-export const MARKET_LABELS: Readonly<Record<string, string>> = { binance: 'Crypto', us: 'US stocks' };
+export const MARKET_LABELS: Readonly<Record<string, string>> = { binance: 'Crypto', us: 'US stocks', futures: 'Futures' };
 
 /** The markets this page load can chart and where their data comes from. */
 export function createMarkets(params = readParams()): MarketRegistry {
@@ -38,13 +38,18 @@ export function createMarkets(params = readParams()): MarketRegistry {
         label: MARKET_LABELS.us,
         provider: new MockProvider({ id: 'mock-us', now, liveIntervalMs, historyBars, calendar: mockUsCalendar(), symbols: MOCK_STOCK_SYMBOLS }),
       },
+      {
+        id: 'futures',
+        label: MARKET_LABELS.futures,
+        provider: new MockProvider({ id: 'mock-futures', now, liveIntervalMs, historyBars, calendar: mockFuturesCalendar(), symbols: MOCK_FUTURES_SYMBOLS }),
+      },
     ]);
   }
   if (mode === 'binance') return new StaticMarketRegistry([{ id: 'binance', label: MARKET_LABELS.binance, provider: new BinanceProvider() }]);
 
-  // The self-hosted server: it caches history and serves both markets. Crypto live updates come
+  // The self-hosted server: it caches history and serves every market. Crypto live updates come
   // straight from Binance's stream (the fastest path), and Binance's public API stands in for
-  // history when the server cannot be reached.
+  // history when the server cannot be reached. Stocks and futures are polled from the server.
   const api = new MarketApi('');
   const binance = new BinanceProvider();
   return new ServerMarketRegistry(
@@ -52,6 +57,8 @@ export function createMarkets(params = readParams()): MarketRegistry {
     [
       { id: 'binance', label: MARKET_LABELS.binance, provider: new ServerMarketProvider({ api, market: 'binance', name: 'Binance Spot', live: binance, fallback: binance }), standalone: true },
       { id: 'us', label: MARKET_LABELS.us, provider: new ServerMarketProvider({ api, market: 'us', name: 'US stocks' }) },
+      // Futures bars stay revisable for 10 minutes after Yahoo's delay (server/market/service.ts).
+      { id: 'futures', label: MARKET_LABELS.futures, provider: new ServerMarketProvider({ api, market: 'futures', name: 'Futures', revisableMs: 10 * 60_000 }) },
     ],
     () => binance.dispose(),
   );

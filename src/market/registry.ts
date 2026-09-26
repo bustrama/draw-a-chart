@@ -78,6 +78,8 @@ export class ServerMarketRegistry extends StaticMarketRegistry {
     api.markets().then(
       (list) => {
         for (const m of list) if (!m.available && !markets.find((e) => e.id === m.id)?.standalone) this.unavailable.add(m.id);
+        // A market the server does not know at all (an older server, e.g. after a rollback).
+        for (const e of markets) if (!e.standalone && !list.some((m) => m.id === e.id)) this.unavailable.add(e.id);
       },
       (err: unknown) => {
         // No market-data API at all (e.g. turned off): only standalone markets work.

@@ -59,7 +59,7 @@ export function TopBar(props: TopBarProps) {
           className="flex items-center gap-1.5 px-1.5 text-xs text-ink-300"
           data-testid="live-status"
           data-status={props.live}
-          title={delayMin > 0 ? `Quotes are delayed by ${delayMin} minutes (free data plan)` : undefined}
+          title={delayMin > 0 ? `Quotes are delayed by ${delayMin} minutes (free data)` : undefined}
         >
           <span className={`inline-block h-2 w-2 rounded-full ${props.live === 'live' && delayMin > 0 ? 'bg-amber-400' : live.color} ${props.loading ? 'animate-pulse' : ''}`} />
           <span className="hidden sm:inline">{liveText}</span>

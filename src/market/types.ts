@@ -75,7 +75,7 @@ export interface LiveCandleListener {
 }
 
 export interface MarketDataProvider {
-  /** Namespace of the charts' drawings (e.g. 'binance', 'us'). */
+  /** Namespace of the charts' drawings (e.g. 'binance', 'us', 'futures'). */
   readonly id: string;
   readonly name: string;
   /** Maximum number of candles a single history request may return. */

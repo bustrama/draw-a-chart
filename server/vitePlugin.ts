@@ -12,7 +12,8 @@ type Market = ReturnType<typeof createMarket>;
  * origin as the app, so `npm run dev` is the whole stack (phones on the LAN included).
  * - Drawings: `.data/dev.sqlite` unless SYNC_DEV_DB says otherwise (':memory:' for throwaway runs).
  * - Market data: `.data/market.sqlite` unless MARKET_DB_FILE says otherwise; US stocks need
- *   APCA_API_KEY_ID and APCA_API_SECRET_KEY (e.g. in `.env`); MARKET_DATA=off turns it off.
+ *   APCA_API_KEY_ID and APCA_API_SECRET_KEY (e.g. in `.env`); FUTURES_DATA=off turns futures off
+ *   (Yahoo); MARKET_DATA=off turns it all off. The futures archive runs here too.
  * Both are only opened on the first API request.
  */
 export function syncDevServer(env: Readonly<Record<string, string | undefined>> = process.env): Plugin {

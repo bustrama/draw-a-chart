@@ -14,15 +14,17 @@ services:
       - "8080:8080"
     volumes:
       # The SQLite databases: draw-a-chart.sqlite (drawings: back it up, see README "Self-hosting")
-      # and market.sqlite (the bar cache: safe to delete, it refills).
+      # and market.sqlite (the bar cache: it refills, except futures history older than Yahoo's).
       - draw-a-chart-data:/data
     environment:
       # US stocks (Alpaca; a free paper-account key works). Put both in a .env file next to this
-      # one (never commit it); without them the app has crypto only.
+      # one (never commit it); without them the app has no US stocks.
       APCA_API_KEY_ID: ${APCA_API_KEY_ID:-}
       APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:-}
       # delayed_sip (default, free: every exchange, 15 min late), sip (real time, paid), iex.
       ALPACA_FEED: ${ALPACA_FEED:-delayed_sip}
+      # Futures come from Yahoo Finance (no key, unofficial); FUTURES_DATA=off in .env turns them off.
+      FUTURES_DATA: ${FUTURES_DATA:-}
       # REQUEST_LOG=1 in .env: one log line per request (debugging a login proxy such as Access).
       REQUEST_LOG: ${REQUEST_LOG:-}
     #   MAX_ROWS: "100000"          # live drawings per user (a guard against runaway clients)

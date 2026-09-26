@@ -1,4 +1,4 @@
-import { SessionCalendar, sessionsFromCalendar, stepBack, stepForward, NEW_YORK } from '../../../shared/sessions.ts';
+import { globexSessions, SessionCalendar, sessionsFromCalendar, stepBack, stepForward, NEW_YORK } from '../../../shared/sessions.ts';
 import { clockFor, getTimeframe } from '../timeframes';
 import type { BarClock, Candle, CandleRequest, LiveCandleListener, MarketDataProvider, PreparedChart, SymbolInfo, TimeframeId } from '../types';
 
@@ -27,7 +27,11 @@ export const MOCK_STOCK_SYMBOLS: readonly SymbolInfo[] = [
   { symbol: 'AAPL', base: 'AAPL', quote: 'USD', name: 'Mock Apple', pricePrecision: 2, minMove: 0.01, timeZone: NEW_YORK, delayMs: 15 * 60_000 },
 ];
 
-const BASE_PRICE: Record<string, number> = { BTCUSDT: 64_000, ETHUSDT: 3_200, SPY: 560, AAPL: 230 };
+export const MOCK_FUTURES_SYMBOLS: readonly SymbolInfo[] = [
+  { symbol: 'ES', base: 'ES', quote: 'USD', name: 'Mock E-mini S&P 500', pricePrecision: 2, minMove: 0.25, timeZone: NEW_YORK, delayMs: 10 * 60_000 },
+];
+
+const BASE_PRICE: Record<string, number> = { BTCUSDT: 64_000, ETHUSDT: 3_200, SPY: 560, AAPL: 230, ES: 5_600 };
 
 /**
  * Deterministic synthetic market data. Prices are a pure function of (symbol, time), so any
@@ -75,10 +79,10 @@ export class MockProvider implements MarketDataProvider {
     let to: number;
     if (req.startTime !== undefined) {
       from = Math.max(firstOpen, firstOpenAtOrAfter(clock, req.startTime));
-      const end = req.endTime !== undefined ? (clock.latest(req.endTime) ?? -Infinity) : lastOpen;
+      const end = req.endTime !== undefined ? lastOpenAtOrBefore(clock, req.endTime) : lastOpen;
       to = Math.min(lastOpen, end, stepForward(clock, from, limit - 1));
     } else {
-      to = Math.min(lastOpen, req.endTime !== undefined ? (clock.latest(req.endTime) ?? -Infinity) : lastOpen);
+      to = Math.min(lastOpen, req.endTime !== undefined ? lastOpenAtOrBefore(clock, req.endTime) : lastOpen);
       from = Math.max(firstOpen, stepBack(clock, to, limit - 1));
     }
     const out: Candle[] = [];
@@ -138,6 +142,14 @@ export class MockProvider implements MarketDataProvider {
   }
 }
 
+/**
+ * Last bar open at or before `time`. (Not `latest`: a futures daily bar that has started on Sunday
+ * evening opens on Monday, after the time.)
+ */
+function lastOpenAtOrBefore(clock: BarClock, time: number): number {
+  return clock.bucket(time) === time ? time : clock.prev(time);
+}
+
 /** First bar open at or after `time`. */
 function firstOpenAtOrAfter(clock: BarClock, time: number): number {
   return clock.bucket(time) === time ? time : clock.next(time);
@@ -156,6 +168,11 @@ export function mockUsCalendar(fromYear = 2025, toYear = 2027): SessionCalendar 
     rows.push({ date: d.toISOString().slice(0, 10), open: '09:30', close: '16:00' });
   }
   return new SessionCalendar(sessionsFromCalendar(rows, NEW_YORK));
+}
+
+/** CME Globex hours for the mock futures market: 18:00-17:00 New York, Sunday evening to Friday. */
+export function mockFuturesCalendar(fromYear = 2015, toYear = 2027): SessionCalendar {
+  return new SessionCalendar(globexSessions(`${fromYear}-01-01`, `${toYear}-12-31`));
 }
 
 function round2(v: number): number {

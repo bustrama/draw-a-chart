@@ -22,6 +22,8 @@ interface Props {
 const SUGGESTED: readonly SymbolChoice[] = [
   { market: 'binance', symbol: 'BTCUSDT' },
   { market: 'binance', symbol: 'ETHUSDT' },
+  { market: 'futures', symbol: 'ES' },
+  { market: 'futures', symbol: 'NQ' },
   { market: 'us', symbol: 'SPY' },
   { market: 'us', symbol: 'QQQ' },
   { market: 'us', symbol: 'AAPL' },
@@ -137,7 +139,7 @@ function SearchPanel({ markets, onClose, onSelect }: { markets: MarketRegistry; 
           setActive(0);
         }}
         onKeyDown={onKeyDown}
-        placeholder="Search: BTC, AAPL, SPY…"
+        placeholder="Search: BTC, ES, AAPL…"
         aria-label="Search symbols"
         autoCapitalize="characters"
         autoCorrect="off"
