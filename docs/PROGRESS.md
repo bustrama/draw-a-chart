@@ -47,6 +47,10 @@ Resume here in a new session. Newest notes at the top of each section.
 
 ## Log
 
+- 2026-09-26 (market cache backup): `market.sqlite` now holds futures history Yahoo no longer
+  serves, so the home server backs it up nightly (03:40, `server/backup.ts` with
+  `DB_FILE=/data/market.sqlite`, kept 7 days next to the drawings backups). First copy 4.4 MB,
+  restore-tested in a throwaway container: integrity ok, all bars there.
 - 2026-09-26 (futures, deployed): 26588f9 runs on the home server (image built on the PC and
   shipped; a local container smoke test first). Checked on the LAN: all three markets available,
   "es" finds the E-mini first and Eversource second, ES bars and the futures calendar (150 KB),
@@ -314,7 +318,7 @@ Resume here in a new session. Newest notes at the top of each section.
   5-minute bars where they exist); exchange holidays in the Globex calendar; a back-adjusted series or single
   contract months; building 4-hour/daily bars from the cached hourly series instead of fetching
   hourly bars again; real-time data when trading starts (broker feed or Databento behind the same
-  `futures` market id); back up `market.sqlite` on the server (it now holds the archive).
+  `futures` market id).
 - Device testing on iPad + Galaxy Tab per `DEVICE_TESTING.md`; tune `PALM`, `NAV`, `QUICKSHAPE`,
   `HANDWRITING` constants from the results.
 - Deployed behind the Cloudflare Tunnel + Access (2026-09-25): run the sync checks in
