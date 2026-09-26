@@ -72,6 +72,32 @@ export async function barTime(page: Page, fromEnd: number): Promise<number> {
   }, fromEnd);
 }
 
+/**
+ * Open time, high and low of the displayed bar `fromEnd` bars before the last one, read from the
+ * chart library's own data by time (independent of the app's index-based `barAt`).
+ */
+export async function barExtent(page: Page, fromEnd: number): Promise<{ t: number; high: number; low: number }> {
+  return page.evaluate((k) => {
+    const w = (window as any).__dac;
+    const idx = w.chart.currentTimeIndex;
+    const t = idx.timeAt(idx.length - 1 - k);
+    const bar = w.chart.candles.data().find((d: { time: number }) => d.time === t / 1000);
+    return { t, high: bar.high, low: bar.low };
+  }, fromEnd);
+}
+
+/** Highest high of the bars on screen and where it is, in pane px. */
+export async function highestVisibleHigh(page: Page): Promise<{ price: number; y: number }> {
+  return page.evaluate(() => {
+    const w = (window as any).__dac;
+    const range = w.chart.chart.timeScale().getVisibleLogicalRange();
+    const data = w.chart.candles.data();
+    let price = -Infinity;
+    for (let i = Math.max(0, Math.ceil(range.from)); i <= Math.min(data.length - 1, Math.floor(range.to)); i++) price = Math.max(price, data[i].high);
+    return { price, y: w.chart.viewport().priceToY(price) };
+  });
+}
+
 /** Visible price range [low, high] of the candle series. */
 export async function priceRange(page: Page): Promise<{ from: number; to: number }> {
   return page.evaluate(() => (window as any).__dac.chart.candles.priceScale().getVisibleRange());

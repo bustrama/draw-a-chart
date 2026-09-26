@@ -14,7 +14,7 @@ export const LIMITS = {
 } as const;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const KINDS = new Set(['ink', 'line', 'glyph']);
+const KINDS = new Set(['ink', 'line', 'glyph', 'stamp']);
 
 /** A change that passed validation. Ids are lower-case; `data` is serialized JSON (null = not sent). */
 export interface ValidChange {
@@ -56,7 +56,7 @@ export function checkChange(input: unknown): CheckedChange {
   if (!isText(input.provider, LIMITS.maxProvider)) return fail(`provider must be 1-${LIMITS.maxProvider} characters`);
   if (!isText(input.symbol, LIMITS.maxSymbol)) return fail(`symbol must be 1-${LIMITS.maxSymbol} characters`);
   if (!isText(input.timeframe, LIMITS.maxTimeframe)) return fail(`timeframe must be 1-${LIMITS.maxTimeframe} characters`);
-  if (typeof input.kind !== 'string' || !KINDS.has(input.kind)) return fail('kind must be ink, line or glyph');
+  if (typeof input.kind !== 'string' || !KINDS.has(input.kind)) return fail('kind must be ink, line, glyph or stamp');
 
   let data: string | null = null;
   if (input.data !== undefined && input.data !== null) {

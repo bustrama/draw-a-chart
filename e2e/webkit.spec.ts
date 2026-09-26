@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import {
   anchorPair,
+  barExtent,
   colorDistanceAt,
   drawings,
   expectNear,
@@ -10,6 +11,7 @@ import {
   paneBox,
   settle,
   SynthInput,
+  viewportClient,
   visiblePointOnSegment,
   waitForChart,
   waitForStableView,
@@ -53,6 +55,19 @@ test.describe('WebKit (iPad-like context)', () => {
     const visible = visiblePointOnSegment(s.expected, e.expected, await paneBox(page));
     expect(visible, 'part of the line is still on screen').not.toBeNull();
     expect(await colorDistanceAt(page, visible!)).toBeLessThan(60);
+  });
+
+  test('a label stamp lands under the low of the tapped bar and is painted at DPR 2', async ({ page }) => {
+    await openApp(page);
+    const input = new SynthInput(page);
+    await page.getByTestId('tool-stamp').click();
+    await page.getByTestId('stamp-sc').click();
+    const bar = await barExtent(page, 40);
+    const low = await viewportClient(page, bar.t, bar.low);
+    await input.penStroke([{ x: low.x, y: low.y + 12 }]);
+    expect(await drawings(page)).toMatchObject([{ kind: 'stamp', label: 'SC', t: bar.t, p: bar.low, place: 'below' }]);
+    await settle(page);
+    expect(await colorDistanceAt(page, { x: low.x, y: low.y + 15 }, undefined, 5)).toBeLessThan(60);
   });
 
   test('persists drawings across reloads and exports a PNG', async ({ page }) => {

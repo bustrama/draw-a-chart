@@ -3,7 +3,7 @@ import { THEME } from '../chart/theme';
 import type { Viewport } from '../chart/viewport';
 import { uuid } from '../lib/ids';
 import { classifyStroke, HANDWRITING, joinsNote } from './classify';
-import { bboxOf, pointInPolygon, polylineLength, rdpIndices, segmentPolylineDistance, segmentSegmentDistance, type Pt } from './geometry';
+import { bboxOf, pointInPolygon, polylineLength, rdpIndices, segmentBoxDistance, segmentPolylineDistance, segmentSegmentDistance, type Pt } from './geometry';
 import {
   glyphScale,
   quantizePressure,
@@ -14,18 +14,22 @@ import {
   type GlyphDrawing,
   type InkDrawing,
   type LineDrawing,
+  type StampDrawing,
   type StrokeStyle,
 } from './model';
 import { fitLine, HoldTracker, isLineLike, snapLineEnd } from './quickShape';
 import { DrawingsPrimitive } from './render/DrawingsPrimitive';
 import type { LiveLayer } from './render/LiveLayer';
 import { fillOutline, glyphScreenPoints, inkOutline, inkScreenPoints, renderDrawing, screenBox, type ScreenBox, type ScreenPoint } from './render/strokes';
+import { DEFAULT_STAMP, placeStamp, stampSnap, stampTextOffset, type StampAnchor } from './stamps';
 import type { DrawingDocument, Mutation, StoreChange } from './store';
 
-export type Tool = 'pen' | 'eraser' | 'select';
+export type Tool = 'pen' | 'eraser' | 'select' | 'stamp';
 
 export interface EngineState {
   readonly tool: Tool;
+  /** Label the stamp tool places (see `stamps.ts`). */
+  readonly stamp: string;
   readonly color: string;
   readonly width: number;
   readonly mouseDraw: boolean;
@@ -117,7 +121,23 @@ interface SelectSession {
   readonly movingIds: readonly string[];
 }
 
-type Session = DrawSession | EraseSession | SelectSession;
+/**
+ * A stamp being placed: it follows the pen (snapping to bars) and lands where the pen lifts;
+ * lifting outside the pane (or under the label strip) places nothing.
+ */
+interface StampSession {
+  readonly kind: 'stamp';
+  readonly pointerId: number;
+  readonly pointerType: 'pen' | 'mouse';
+  readonly id: string;
+  readonly label: string;
+  readonly style: StrokeStyle;
+  at: StampAnchor;
+  /** Whether the pen is where the stamp would be placed (see stampable). */
+  placeable: boolean;
+}
+
+type Session = DrawSession | EraseSession | SelectSession | StampSession;
 
 /** A stroke whose samples are held until the chart has painted a pending view change. */
 interface PendingStart {
@@ -159,6 +179,8 @@ export class DrawingEngine {
   private selection = new Set<string>();
   private note: NoteContext | null = null;
   private hoverPoint: { x: number; y: number; eraserButton: boolean } | null = null;
+  /** Pane px at the top covered by controls (the label strip): no stamp is placed there. */
+  private coveredTop = 0;
   private liveFrame: number | null = null;
   private readonly remotePreviews = new Map<string, RemotePreview>();
   private previewSweep: ReturnType<typeof setTimeout> | null = null;
@@ -176,6 +198,7 @@ export class DrawingEngine {
     this.hooks = hooks;
     this.state = {
       tool: 'pen',
+      stamp: DEFAULT_STAMP,
       color: '#ffd166',
       width: 2.5,
       mouseDraw: false,
@@ -246,6 +269,18 @@ export class DrawingEngine {
     this.requestLive();
   }
 
+  /** Arms a label and switches to the stamp tool. */
+  setStamp(label: string): void {
+    this.updateState({ stamp: label });
+    this.setTool('stamp');
+  }
+
+  /** How far down from the pane's top controls cover the chart (0 = nothing). */
+  setCoveredTop(px: number): void {
+    this.coveredTop = Math.max(0, px);
+    this.requestLive();
+  }
+
   setColor(color: string): void {
     this.updateState({ color });
     this.recolorSelection(color);
@@ -257,6 +292,8 @@ export class DrawingEngine {
 
   setMouseDraw(on: boolean): void {
     this.updateState({ mouseDraw: on });
+    // Mouse hovers stop arriving: drop the last one (eraser cursor, stamp preview).
+    if (!on) this.hover(null);
   }
 
   setHandwriting(on: boolean): void {
@@ -356,6 +393,12 @@ export class DrawingEngine {
         if (session.mode === 'lasso') for (const s of samples) session.lasso.push({ x: s.x, y: s.y });
         break;
       }
+      case 'stamp': {
+        const last = samples[samples.length - 1];
+        session.at = this.stampAnchor(session.label, last.x, last.y, v);
+        session.placeable = this.stampable(last, v);
+        break;
+      }
     }
     this.requestLive();
   }
@@ -391,14 +434,16 @@ export class DrawingEngine {
     if (this.session) this.finish(this.session, 'discard');
   }
 
-  /** Pen/mouse hover (no contact); `null` when the pointer left. Drives the eraser cursor. */
+  /**
+   * Pen/mouse hover (no contact); `null` when the pointer left. Drives the eraser cursor and,
+   * with the stamp tool, a preview of where the stamp would land.
+   */
   hover(s: { x: number; y: number } | null, eraserButton = false): void {
     const next = s ? { x: s.x, y: s.y, eraserButton } : null;
     const before = this.hoverPoint;
     this.hoverPoint = next;
-    const visibleBefore = before !== null && (before.eraserButton || this.state.tool === 'eraser');
-    const visibleNow = next !== null && (next.eraserButton || this.state.tool === 'eraser');
-    if (visibleBefore || visibleNow) this.requestLive();
+    const shown = (h: typeof next) => h !== null && (h.eraserButton || this.state.tool === 'eraser' || this.state.tool === 'stamp');
+    if (shown(before) || shown(next)) this.requestLive();
   }
 
   // ---- remote live previews ------------------------------------------------------------------
@@ -451,6 +496,18 @@ export class DrawingEngine {
         for (const id of movingIds) this.hiddenIds.add(id);
         this.primitive.invalidate();
       }
+    } else if (tool === 'stamp') {
+      const label = this.state.stamp;
+      this.session = {
+        kind: 'stamp',
+        pointerId,
+        pointerType: info.pointerType,
+        id: uuid(),
+        label,
+        style: { color: this.state.color, width: this.state.width },
+        at: this.stampAnchor(label, s.x, s.y, v),
+        placeable: this.stampable(s, v),
+      };
     } else {
       const session: DrawSession = {
         kind: 'draw',
@@ -582,6 +639,11 @@ export class DrawingEngine {
         } else {
           this.primitive.invalidate();
         }
+      } else if (session.kind === 'stamp') {
+        if (mode === 'commit' && session.placeable && this.doc) {
+          const stamp: StampDrawing = { id: session.id, kind: 'stamp', style: session.style, createdAt: Date.now(), label: session.label, ...session.at };
+          this.doc.commit('stamp', [{ op: 'put', drawing: stamp }]);
+        }
       } else {
         this.finishSelect(session, mode);
       }
@@ -693,7 +755,8 @@ export class DrawingEngine {
         const moved: Mutation[] = [];
         for (const id of session.movingIds) {
           const d = this.doc.store.get(id);
-          if (d) moved.push({ op: 'put', drawing: translateDrawing(d, dx, dy, v) });
+          const m = d && this.movedDrawing(d, dx, dy, v);
+          if (m && m !== d) moved.push({ op: 'put', drawing: m }); // a stamp that stays put is no edit
         }
         if (!this.doc.commit('move', moved)) this.primitive.invalidate();
       } else {
@@ -731,24 +794,36 @@ export class DrawingEngine {
     return box !== null && p.x >= box.minX - 8 && p.x <= box.maxX + 8 && p.y >= box.minY - 8 && p.y <= box.maxY + 8;
   }
 
+  /** Screen box around drawings, as they would be after a move by (dx, dy). */
   private selectionBox(v: Viewport, ids: Iterable<string>, dx = 0, dy = 0): ScreenBox | null {
     if (!this.doc) return null;
     let box: ScreenBox | null = null;
     for (const id of ids) {
       const d = this.doc.store.get(id);
       if (!d) continue;
-      const b = screenBox(d, v);
+      let b: ScreenBox;
+      if (d.kind === 'stamp' && (dx !== 0 || dy !== 0)) {
+        b = screenBox(this.movedDrawing(d, dx, dy, v), v);
+      } else {
+        const s = screenBox(d, v);
+        b = { minX: s.minX + dx, minY: s.minY + dy, maxX: s.maxX + dx, maxY: s.maxY + dy };
+      }
       box = box
         ? { minX: Math.min(box.minX, b.minX), minY: Math.min(box.minY, b.minY), maxX: Math.max(box.maxX, b.maxX), maxY: Math.max(box.maxY, b.maxY) }
-        : { ...b };
-    }
-    if (box) {
-      box.minX += dx;
-      box.maxX += dx;
-      box.minY += dy;
-      box.maxY += dy;
+        : b;
     }
     return box;
+  }
+
+  /**
+   * A drawing moved by a screen delta. A stamp lands on the bar it is dropped on, like a placed
+   * one, with its text standing in for the pen: dropped above the bar's middle, it goes above.
+   * An unmoved stamp is returned as is.
+   */
+  private movedDrawing(d: Drawing, dx: number, dy: number, v: Viewport): Drawing {
+    if (d.kind !== 'stamp') return translateDrawing(d, dx, dy, v);
+    const at = this.stampAnchor(d.label, v.timeToX(d.t) + dx, v.priceToY(d.p) + stampTextOffset(d.place) + dy, v);
+    return at.t === d.t && at.p === d.p && at.place === d.place ? d : { ...d, ...at };
   }
 
   private recolorSelection(color: string): void {
@@ -848,15 +923,25 @@ export class DrawingEngine {
         ctx.stroke();
         ctx.restore();
       } else if (this.doc) {
-        // The move preview is a pure screen translation of the originals.
-        ctx.save();
-        ctx.translate(session.last.x - session.start.x, session.last.y - session.start.y);
+        // The move preview: the originals translated on screen, stamps where they will land.
+        const dx = session.last.x - session.start.x;
+        const dy = session.last.y - session.start.y;
         for (const id of session.movingIds) {
           const d = this.doc.store.get(id);
-          if (d) renderDrawing(ctx, d, v);
+          if (!d) continue;
+          if (d.kind === 'stamp') {
+            renderDrawing(ctx, this.movedDrawing(d, dx, dy, v), v);
+            continue;
+          }
+          ctx.save();
+          ctx.translate(dx, dy);
+          renderDrawing(ctx, d, v);
+          ctx.restore();
         }
-        ctx.restore();
       }
+    } else if (session?.kind === 'stamp' && session.placeable) {
+      drew = true;
+      this.drawStampGhost(ctx, v, session.label, session.style, session.at, 0.75);
     }
 
     const moving = session?.kind === 'select' && session.mode === 'move' ? session : null;
@@ -889,8 +974,30 @@ export class DrawingEngine {
       ctx.arc(cursor.x, cursor.y, ERASER_RADIUS_PX, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
+    } else if (!session && hover && this.state.tool === 'stamp' && this.stampable(hover, v)) {
+      // Hovering pen (or mouse in mouse-draw mode): where the stamp would land.
+      drew = true;
+      const { stamp, color, width } = this.state;
+      this.drawStampGhost(ctx, v, stamp, { color, width }, this.stampAnchor(stamp, hover.x, hover.y, v), 0.45);
     }
     return drew;
+  }
+
+  private drawStampGhost(ctx: CanvasRenderingContext2D, v: Viewport, label: string, style: StrokeStyle, at: StampAnchor, alpha: number): void {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    renderDrawing(ctx, { id: '', kind: 'stamp', style, createdAt: 0, label, ...at }, v);
+    ctx.restore();
+  }
+
+  /** Where a stamp with this label lands for pane point (x, y): see `placeStamp`. */
+  private stampAnchor(label: string, x: number, y: number, v: Viewport): StampAnchor {
+    return placeStamp(stampSnap(label), x, y, v, (i) => this.chart.barAt(i));
+  }
+
+  /** Whether a pen at this pane point places a stamp: over the pane, below any covering control. */
+  private stampable(p: { readonly x: number; readonly y: number }, v: Viewport): boolean {
+    return inPane(p, v) && p.y >= this.coveredTop;
   }
 
   // ---- misc ------------------------------------------------------------------------------------
@@ -907,6 +1014,7 @@ export class DrawingEngine {
     const prev = this.state;
     if (
       prev.tool === next.tool &&
+      prev.stamp === next.stamp &&
       prev.color === next.color &&
       prev.width === next.width &&
       prev.mouseDraw === next.mouseDraw &&
@@ -941,6 +1049,11 @@ export class DrawingEngine {
     }
     this.listeners.clear();
   }
+}
+
+/** Whether a pane point lies inside the pane (the chart area, without the axes). */
+function inPane(p: { readonly x: number; readonly y: number }, v: Viewport): boolean {
+  return p.x >= 0 && p.x <= v.width && p.y >= 0 && p.y <= v.height;
 }
 
 /**
@@ -981,11 +1094,12 @@ function capGlyphPoints<T extends { x: number; y: number }>(points: readonly T[]
   return all.filter((_, i) => i % step === 0 || i === all.length - 1);
 }
 
-/** Minimum distance between segment ab and a drawing's centre line, in screen px. */
+/** Minimum distance between segment ab and a drawing's centre line (a stamp's box), in screen px. */
 export function distanceToDrawing(d: Drawing, v: Viewport, a: Pt, b: Pt): number {
   if (d.kind === 'line') {
     return segmentSegmentDistance(a, b, { x: v.timeToX(d.t1), y: v.priceToY(d.p1) }, { x: v.timeToX(d.t2), y: v.priceToY(d.p2) });
   }
+  if (d.kind === 'stamp') return segmentBoxDistance(a, b, screenBox(d, v));
   const pts = d.kind === 'ink' ? inkScreenPoints(d, v) : glyphScreenPoints(d, v);
   return segmentPolylineDistance(
     a,
@@ -999,6 +1113,12 @@ function samplePoints(d: Drawing, v: Viewport): Pt[] {
     const a = { x: v.timeToX(d.t1), y: v.priceToY(d.p1) };
     const b = { x: v.timeToX(d.t2), y: v.priceToY(d.p2) };
     return [a, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, b];
+  }
+  if (d.kind === 'stamp') {
+    const box = screenBox(d, v);
+    const cx = (box.minX + box.maxX) / 2;
+    const cy = (box.minY + box.maxY) / 2;
+    return [{ x: box.minX, y: box.minY }, { x: box.maxX, y: box.minY }, { x: cx, y: cy }, { x: box.maxX, y: box.maxY }, { x: box.minX, y: box.maxY }];
   }
   const pts = d.kind === 'ink' ? inkScreenPoints(d, v) : glyphScreenPoints(d, v);
   const step = Math.max(1, Math.floor(pts.length / 64));
@@ -1017,6 +1137,8 @@ export function translateDrawing(d: Drawing, dx: number, dy: number, v: Viewport
       return { ...d, t1: shiftT(d.t1), p1: shiftP(d.p1), t2: shiftT(d.t2), p2: shiftP(d.p2) };
     case 'glyph':
       return { ...d, at: shiftT(d.at), ap: shiftP(d.ap) };
+    case 'stamp':
+      return { ...d, t: shiftT(d.t), p: shiftP(d.p) };
     case 'ink': {
       const pts = d.pts.slice();
       for (let i = 0; i < pts.length; i += 3) {

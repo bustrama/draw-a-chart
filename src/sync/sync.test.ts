@@ -1,9 +1,10 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ChartKey, Drawing } from '../drawing/model';
+import { checkChange } from '../../server/validate.ts';
+import { chartKeyString, DRAWING_KINDS, type ChartKey, type Drawing } from '../drawing/model';
 import { LocalDrawingDb } from './localDb';
 import { PersistentDocuments } from './PersistentDocuments';
-import { SyncEngine } from './SyncEngine';
+import { pullCursorKey, SyncEngine } from './SyncEngine';
 import { FakeBackend } from './testing/FakeBackend';
 
 const KEY: ChartKey = { provider: 'binance', symbol: 'BTCUSDT', timeframe: '1h' };
@@ -17,6 +18,10 @@ afterEach(() => {
 
 function line(id: string, t2 = 2000, color = '#ffffff'): Drawing {
   return { id, kind: 'line', style: { color, width: 2 }, createdAt: 1, t1: 1000, p1: 10, t2, p2: 20 };
+}
+
+function stamp(id: string, label = 'SC', t = 1000): Drawing {
+  return { id, kind: 'stamp', style: { color: '#ffffff', width: 2 }, createdAt: 1, label, t, p: 10, place: 'below' };
 }
 
 interface Device {
@@ -479,5 +484,136 @@ describe('a server that was restored from a backup or replaced (new generation)'
     await settleSync(a);
     expect(backend.rows.get('local')?.rev).toBe(1);
     expect(await a.db.getMeta('server-generation')).toBe(backend.generation);
+  });
+});
+
+describe('drawing kinds added by an app update', () => {
+  /** The cursor key of the version without stamps (still used by a tab that has not updated). */
+  const OLD_CURSOR = `cursor:${USER}:${chartKeyString(KEY)}`;
+  /** Later than every row the fake server writes in these tests (and than the pull overlap). */
+  const PAST_EVERY_ROW = '2026-01-01T01:00:00.000Z';
+
+  it('the sync server accepts every kind this version draws', () => {
+    for (const kind of DRAWING_KINDS) {
+      const checked = checkChange({ id: '00000000-0000-4000-8000-000000000001', op_id: '00000000-0000-4000-8000-000000000002', base_rev: 0, ...KEY, kind, data: {}, deleted: false });
+      expect(checked.ok, kind).toBe(true);
+    }
+  });
+
+  it('pulls in full a chart an older version pulled while skipping the rows it did not know', async () => {
+    const backend = new FakeBackend();
+    const other = device(backend);
+    const docOther = other.docs.open(KEY);
+    other.sync.setUser(USER);
+    docOther.commit('stamp', [{ op: 'put', drawing: stamp('s1') }]);
+    docOther.commit('draw', [{ op: 'put', drawing: line('l1') }]);
+    await settleSync(other);
+
+    // What a version without stamps left behind: the line, and a cursor past the stamp's row.
+    const name = `dac-kinds-${++dbCounter}`;
+    const before = new LocalDrawingDb(name);
+    await before.mergeRemote([...backend.rows.values()].filter((r) => r.kind !== 'stamp'));
+    await before.setMeta(OLD_CURSOR, PAST_EVERY_ROW);
+    await before.close();
+
+    const me = device(backend, name);
+    const doc = me.docs.open(KEY);
+    me.sync.setUser(USER);
+    me.sync.setActiveChart(KEY);
+    await settleSync(me);
+    expect(doc.store.all().map((d) => d.id).sort()).toEqual(['l1', 's1']);
+    expect(await me.db.getMeta(pullCursorKey(USER, KEY))).toBeTruthy();
+    expect(await me.db.getMeta(OLD_CURSOR)).toBe(PAST_EVERY_ROW); // the older version's own cursor
+  });
+
+  it("does not let a tab still running the older version move this version's cursors", async () => {
+    const backend = new FakeBackend();
+    const other = device(backend);
+    const docOther = other.docs.open(KEY);
+    other.sync.setUser(USER);
+    docOther.commit('draw', [{ op: 'put', drawing: line('l1') }]);
+    await settleSync(other);
+
+    // This version pulls the chart, then its tab is closed.
+    const name = `dac-kinds-${++dbCounter}`;
+    const first = device(backend, name);
+    const docFirst = first.docs.open(KEY);
+    first.sync.setUser(USER);
+    first.sync.setActiveChart(KEY);
+    await settleSync(first);
+    expect(docFirst.store.all().map((d) => d.id)).toEqual(['l1']);
+    first.sync.dispose();
+    first.docs.dispose();
+
+    // A stamp is drawn elsewhere. An old tab on this device pulls, skips it and moves its cursor.
+    docOther.commit('stamp', [{ op: 'put', drawing: stamp('s1') }]);
+    await settleSync(other);
+    await first.db.setMeta(OLD_CURSOR, PAST_EVERY_ROW);
+
+    // This version opens again: its own cursor is still before the stamp.
+    const again = device(backend, name);
+    const doc = again.docs.open(KEY);
+    again.sync.setUser(USER);
+    again.sync.setActiveChart(KEY);
+    await settleSync(again);
+    expect(doc.store.all().map((d) => d.id).sort()).toEqual(['l1', 's1']);
+  });
+
+  it('keeps its cursors between starts (no full pull every time)', async () => {
+    const backend = new FakeBackend();
+    const other = device(backend);
+    const docOther = other.docs.open(KEY);
+    other.sync.setUser(USER);
+    docOther.commit('draw', [{ op: 'put', drawing: line('older-than-cursor') }]);
+    await settleSync(other);
+
+    const name = `dac-kinds-${++dbCounter}`;
+    const before = new LocalDrawingDb(name);
+    await before.setMeta(pullCursorKey(USER, KEY), PAST_EVERY_ROW);
+    await before.close();
+
+    const me = device(backend, name);
+    const doc = me.docs.open(KEY);
+    me.sync.setUser(USER);
+    me.sync.setActiveChart(KEY);
+    await settleSync(me);
+    // The cursor was honoured: a row behind it is not pulled again.
+    expect(doc.store.all()).toEqual([]);
+    expect(await me.db.getMeta(pullCursorKey(USER, KEY))).toBe(PAST_EVERY_ROW);
+  });
+
+  it('syncs stamps between devices: placed, moved and erased', async () => {
+    const backend = new FakeBackend();
+    const a = device(backend);
+    const b = device(backend);
+    const docA = a.docs.open(KEY);
+    const docB = b.docs.open(KEY);
+    a.sync.setUser(USER);
+    b.sync.setUser(USER);
+    b.sync.setActiveChart(KEY);
+    docA.commit('stamp', [{ op: 'put', drawing: stamp('st', '3rd B') }]);
+    await settleSync(a, b);
+    expect(docB.store.get('st')).toEqual(stamp('st', '3rd B'));
+    docA.commit('move', [{ op: 'put', drawing: stamp('st', '3rd B', 5000) }]);
+    await settleSync(a, b);
+    expect(docB.store.get('st')).toEqual(stamp('st', '3rd B', 5000));
+    docA.commit('erase', [{ op: 'delete', id: 'st' }]);
+    await settleSync(a, b);
+    expect(docB.store.get('st')).toBeUndefined();
+    expect(backend.rows.get('st')).toMatchObject({ kind: 'stamp', rev: 3, deleted: true });
+  });
+
+  it('uploads stamps again, as stamps, to a replaced server', async () => {
+    const backend = new FakeBackend();
+    const a = device(backend);
+    const doc = a.docs.open(KEY);
+    a.sync.setUser(USER);
+    a.sync.setActiveChart(KEY);
+    await a.docs.whenLoaded(KEY);
+    doc.commit('stamp', [{ op: 'put', drawing: stamp('kept') }]);
+    await settleSync(a);
+    backend.replace();
+    await settleSync(a);
+    expect(backend.rows.get('kept')).toMatchObject({ kind: 'stamp', rev: 1, deleted: false, data: stamp('kept') });
   });
 });

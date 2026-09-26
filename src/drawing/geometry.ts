@@ -140,6 +140,21 @@ export function rdpIndices(xs: ArrayLike<number>, ys: ArrayLike<number>, toleran
   return out;
 }
 
+/** Minimum distance from segment ab to a box (0 when the segment touches or enters it). */
+export function segmentBoxDistance(a: Pt, b: Pt, box: BBox): number {
+  const inside = (p: Pt) => p.x >= box.minX && p.x <= box.maxX && p.y >= box.minY && p.y <= box.maxY;
+  if (inside(a) || inside(b)) return 0;
+  const corners: Pt[] = [
+    { x: box.minX, y: box.minY },
+    { x: box.maxX, y: box.minY },
+    { x: box.maxX, y: box.maxY },
+    { x: box.minX, y: box.maxY },
+  ];
+  let best = Infinity;
+  for (let i = 0; i < 4; i++) best = Math.min(best, segmentSegmentDistance(a, b, corners[i], corners[(i + 1) % 4]));
+  return best;
+}
+
 /** Minimum distance from segment ab to a polyline. */
 export function segmentPolylineDistance(a: Pt, b: Pt, points: readonly Pt[]): number {
   if (points.length === 0) return Infinity;

@@ -93,6 +93,22 @@ hardware before it can be called verified. Record results in the table at the en
 | 6.11 | `docker compose restart` while two devices are open | Both reconnect by themselves within ~30 s; drawings made meanwhile arrive |
 | 6.12 | Restore a backup (README) while devices hold newer drawings, then open the app on them | The backup's drawings are back; drawings created after the backup reappear once each device that has them reconnects |
 
+## 6b. Wyckoff label stamps
+
+| # | Action | Expected |
+|---|---|---|
+| 6b.1 | Tap the tag in the tool rail with the pen; tap **SC** in the strip | The strip appears over the top of the chart; SC is highlighted in the pen colour. On a short screen the candles move down a little, so a label fits above the highest candle below the strip |
+| 6b.2 | Pen-tap just under a candle's low | "SC" appears under that candle's low with a small tick pointing at it; tapping again places another SC (the label stays armed) |
+| 6b.3 | Pen-tap just over a candle's high with **AR** armed | "AR" appears above the high |
+| 6b.4 | Press the pen on one candle and slide sideways before lifting | The label follows from candle to candle; it is placed only where the pen lifts |
+| 6b.4a | Press on a candle, slide onto the price axis and lift there | Nothing is placed (the preview disappears once the pen leaves the chart) |
+| 6b.4b | Select a label (select tool, tap it) and drag it under another candle | It lands under that candle's low, with the tick pointing at it |
+| 6b.5 | Pencil hover (M2+ iPad Pro / Pencil Pro) or S Pen Air View with the label tool on | A faint preview shows where the label would land |
+| 6b.6 | Phase **C**: tap anywhere in a candle's column | A boxed "Phase C" at that candle's time, at the pen's height |
+| 6b.7 | Tap chips with the pen while the palm rests on the chart | The chart does not pan (record any movement) |
+| 6b.8 | Galaxy phone (portrait): swipe the strip sideways with a finger | It scrolls to the distribution labels, the B waves and the phases |
+| 6b.9 | Pinch/pan after placing labels; draw on the other device | Labels keep their size and stay on their candles; they sync to the other device |
+
 ## 7. Orientation and layout
 
 | # | Action | Expected |

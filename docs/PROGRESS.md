@@ -22,6 +22,7 @@ Resume here in a new session. Newest notes at the top of each section.
 | 14 | Self-hosting: Dockerfile, docker-compose, online backup/restore | ✅ deployed (home server behind Cloudflare Tunnel + Access; image built on a PC and shipped; nightly backups) |
 | 15 | Market data: server bar cache (fetch only what is missing), US stocks and ETFs (Alpaca free plan: every exchange, 15 min delayed, regular hours), every Binance pair, symbol search, trading-session clocks (future area and gaps follow the calendar), New York time axis | ✅ deployed 2026-09-25 (1087971) |
 | 16 | Futures: 15 CME Group contracts (ES, NQ, YM, RTY and micros, CL, NG, GC, MGC, SI, HG, 6E) from Yahoo Finance (continuous front month, Globex hours, 10 min delayed), 4-hour/daily bars from hourly, an archive that keeps Yahoo's expiring intraday history | ✅ deployed 2026-09-26 (26588f9) |
+| 17 | Wyckoff label stamps: a label strip (his 16 events, 1st/2nd/3rd B, Phases A–E), pick-then-tap placement on a bar's high or low, a new synced drawing kind `stamp` | ✅ built 2026-09-26; **not deployed**, not tested on devices ([DEVICE_TESTING](DEVICE_TESTING.md) §6b) |
 
 ## Verification snapshot (2026-09-25, market data)
 
@@ -46,6 +47,45 @@ Resume here in a new session. Newest notes at the top of each section.
 - Not verified: anything on a physical iPad/Galaxy tablet; the real Cloudflare Tunnel/Access setup
 
 ## Log
+
+- 2026-09-26 (Wyckoff label stamps): the user asked for label stamps: neat, machine-readable
+  Wyckoff labels next to handwriting. Built, not deployed.
+  - Vocabulary: the 16 events, 1st/2nd/3rd B, Phases A–E.
+  - The user chose **pick, then tap** (a strip of chips, the armed label stays) over "tap, then
+    pick from a menu", and the 3 B's and phases over his level names.
+  - New drawing kind `stamp` (label text, anchor time + price, `above`/`below`/`at`); events snap
+    to the high or low of the bar under the pen, phases to its time; label tool `L`.
+  - Server: `stamp` accepted (`validate.ts`); nothing else changes there (data is opaque).
+  - Two independent reviews (engine/UI; sync/compat), all findings fixed or documented:
+    - **An installed app not yet updated skips stamp rows but moves its pull cursors past them**
+      (checked in code: `adoptRow` ignores unknown kinds). A one-time cursor reset was tried
+      first; the reviewer reproduced that a tab of the old version still open in the same
+      browser profile moves the shared cursors again. Cursors are now kept per set of drawing
+      kinds (`pullCursorKey`); two regression tests fail with the old key.
+    - Lifting the pen outside the chart committed an invisible stamp: it now cancels.
+    - On short panes (11" iPad landscape, the Galaxy) the strip covered labels above the highest
+      bars: the label tool widens the top price margin where needed (`setTopInset`).
+    - Moving a stamp left it floating off its bar: it now re-snaps like a placed one.
+    - Smaller: no hover preview over the axes, no frozen preview after `D`, the error banner
+      below the strip, wheel scrolling on the strip, accessible grouping, stricter label text
+      (no invisible formatting characters), `DRAWING_KINDS` tied to the type, stronger tests
+      (bar prices read independently of `barAt`, the phase box checked by its edge).
+    - Documented instead of changed: a server rollback to an image without stamps drops stamp
+      changes (they are not re-sent); a stamp on the forming bar keeps that bar's extreme.
+  - A second review of the fixes found the sync side correct (invisible characters written raw
+    in a test were escaped) and four more on the engine side, all fixed: a moved label chose its
+    side from its old anchor (now from where its text is dropped); a nudge that changed nothing
+    made an undo step and a synced write; switching tools with the keyboard mid-stroke rescaled
+    the chart under the pen (the margin change now waits for the pen, like data updates); a
+    label could be dropped under the strip, where it was hidden.
+  - Negative controls run: the pixel check without the text, the re-pull tests with the old
+    cursor key, lift-outside and under-the-strip, room under the strip, no rescale mid-stroke,
+    re-snap on move, the side from the text, the no-op nudge, the phase box: each test fails with
+    its fix disabled.
+  - Verified: lint and typecheck clean, build OK; unit 270 tests (31 files); browser 69 tests
+    (8 new for stamps in Chromium, 1 in the WebKit iPad-like context, 1 multi-device sync).
+  - To do (user): try it on the iPad and the Galaxy ([DEVICE_TESTING](DEVICE_TESTING.md) §6b),
+    then deploy (the server and the app ship together in the image).
 
 - 2026-09-26 (market cache backup): `market.sqlite` now holds futures history Yahoo no longer
   serves, so the home server backs it up nightly (03:40, `server/backup.ts` with

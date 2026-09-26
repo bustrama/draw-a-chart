@@ -34,6 +34,13 @@ export const EraserIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const LabelIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3.5 11.6V5a1.5 1.5 0 0 1 1.5-1.5h6.6a1.5 1.5 0 0 1 1.06.44l7.4 7.4a1.5 1.5 0 0 1 0 2.12l-6.6 6.6a1.5 1.5 0 0 1-2.12 0l-7.4-7.4a1.5 1.5 0 0 1-.44-1.06z" />
+    <circle cx="8" cy="8" r="1.3" />
+  </Svg>
+);
+
 export const LassoIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M7 17.5C4.6 16.3 3 14.4 3 12.2 3 8.2 7 5 12 5s9 3.2 9 7.2-4 7.2-9 7.2c-.9 0-1.8-.1-2.6-.3" strokeDasharray="2.4 2.2" />

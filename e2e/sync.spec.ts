@@ -99,6 +99,20 @@ test.describe('sync through the self-hosted server', () => {
     await expect.poll(() => serverRows(s, a.page)).toMatchObject([{ id: drawn.id, rev: 2, deleted: true }]);
   });
 
+  test('a Wyckoff label stamped on one device appears on the other', async ({ browser }) => {
+    const s = await server();
+    const a = await openDevice(browser, s);
+    const b = await openDevice(browser, s);
+    await a.page.getByTestId('tool-stamp').click();
+    await a.page.getByTestId('stamp-utad').click();
+    const box = await paneBox(a.page);
+    await a.input.penStroke([{ x: box.x + box.width * 0.6, y: box.y + box.height * 0.3 }]);
+    const [stamp] = await drawings(a.page);
+    expect(stamp).toMatchObject({ kind: 'stamp', label: 'UTAD' });
+    await expect.poll(() => drawings(b.page)).toEqual([stamp]);
+    expect(await serverRows(s, a.page)).toMatchObject([{ id: stamp.id, kind: 'stamp', rev: 1, deleted: false }]);
+  });
+
   test('the stroke in progress is previewed live on the other device, then replaced by the saved drawing', async ({ browser }) => {
     const s = await server();
     const a = await openDevice(browser, s);

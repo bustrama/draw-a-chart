@@ -1,4 +1,4 @@
-import { chartKeyString, type ChartKey } from '../drawing/model';
+import { chartKeyString, DRAWING_KINDS, type ChartKey } from '../drawing/model';
 import { uuid } from '../lib/ids';
 import { SERVER_GENERATION, type LocalDrawingDb, type OutboxEntry, type RemoteRow } from './localDb';
 import type { PersistentDocuments } from './PersistentDocuments';
@@ -29,6 +29,17 @@ const BATCH = 50;
 const PAGE = 500;
 /** Pull overlap: tolerates commit-order skew between transactions (rows are merged idempotently). */
 const PULL_OVERLAP_MS = 120_000;
+
+/**
+ * Meta key of a chart's pull cursor. A version skips rows of drawing kinds it does not know, yet
+ * moves its cursor past them, so each set of kinds keeps its own cursors: after an update that
+ * adds a kind, the first pull of every chart is a full one, and a tab still running the older
+ * version (same IndexedDB) cannot move the newer version's cursors. Every key starts with
+ * `cursor:`, which a server generation change clears (`resetForServer`).
+ */
+export function pullCursorKey(user: string, key: ChartKey): string {
+  return `cursor:${DRAWING_KINDS.join('+')}:${user}:${chartKeyString(key)}`;
+}
 
 /**
  * Local-first sync. The local database is the source of truth for the UI; this engine
@@ -232,7 +243,7 @@ export class SyncEngine {
     const remote = this.remote;
     const user = this.userId;
     if (!remote || !user) return;
-    const cursorKey = `cursor:${user}:${chartKeyString(key)}`;
+    const cursorKey = pullCursorKey(user, key);
     try {
       await this.ensureGeneration();
       let cursor = (await this.db.getMeta<string>(cursorKey)) ?? null;

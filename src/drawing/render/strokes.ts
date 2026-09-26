@@ -1,6 +1,7 @@
 import { getStroke } from 'perfect-freehand';
 import { LinearPriceMapping, type Viewport } from '../../chart/viewport';
-import { glyphScale, type Drawing, type GlyphDrawing, type InkDrawing, type LineDrawing } from '../model';
+import { glyphScale, type Drawing, type GlyphDrawing, type InkDrawing, type LineDrawing, type StampDrawing } from '../model';
+import { STAMP, stampBox } from '../stamps';
 
 /**
  * Rendering of drawings in pane-local CSS px. Used by both the chart primitive (committed
@@ -151,6 +152,7 @@ export interface ScreenBox {
 
 /** Conservative screen bounding box of a drawing under the viewport. */
 export function screenBox(d: Drawing, v: Viewport): ScreenBox {
+  if (d.kind === 'stamp') return stampBox(d.label, d.place, v.timeToX(d.t), v.priceToY(d.p));
   if (d.kind === 'glyph') {
     const { bounds } = glyphShape(d);
     const ax = v.timeToX(d.at);
@@ -261,7 +263,55 @@ export function renderDrawing(ctx: CanvasRenderingContext2D, d: Drawing, v: View
       ctx.restore();
       return;
     }
+    case 'stamp': {
+      drawStamp(ctx, d, v);
+      return;
+    }
   }
+}
+
+/**
+ * A stamp beside a bar is its text with a halo and a tick pointing at the high (or low); a
+ * centred stamp (a phase) is its text in an outlined box. Constant size at every zoom.
+ */
+function drawStamp(ctx: CanvasRenderingContext2D, d: StampDrawing, v: Viewport): void {
+  const ax = v.timeToX(d.t);
+  const ay = v.priceToY(d.p);
+  ctx.save();
+  ctx.font = STAMP.font;
+  ctx.textAlign = 'center';
+  ctx.lineJoin = 'round';
+  let textY = ay;
+  if (d.place === 'at') {
+    const box = stampBox(d.label, 'at', ax, ay);
+    ctx.fillStyle = STAMP.plate;
+    ctx.strokeStyle = d.style.color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const [x, y, w, h] = [box.minX + 0.5, box.minY + 0.5, box.maxX - box.minX - 1, box.maxY - box.minY - 1];
+    if (typeof ctx.roundRect === 'function') ctx.roundRect(x, y, w, h, 4);
+    else ctx.rect(x, y, w, h);
+    ctx.fill();
+    ctx.stroke();
+    ctx.textBaseline = 'middle';
+  } else {
+    const dir = d.place === 'above' ? -1 : 1;
+    ctx.strokeStyle = d.style.color;
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(ax, ay + dir * STAMP.gap);
+    ctx.lineTo(ax, ay + dir * (STAMP.gap + STAMP.tick));
+    ctx.stroke();
+    ctx.textBaseline = d.place === 'above' ? 'bottom' : 'top';
+    textY = ay + dir * (STAMP.gap + STAMP.tick + STAMP.textGap);
+    ctx.strokeStyle = STAMP.plate;
+    ctx.lineWidth = STAMP.halo;
+    ctx.strokeText(d.label, ax, textY);
+  }
+  ctx.fillStyle = d.style.color;
+  ctx.fillText(d.label, ax, textY);
+  ctx.restore();
 }
 
 /** Renders all visible drawings (culled against the pane). Returns the number drawn. */

@@ -62,6 +62,9 @@ export interface ChartControllerOptions {
 }
 
 const LOAD_OLDER_THRESHOLD_BARS = 60;
+/** Shares of the pane the auto-scaled price range leaves free above and below the bars. */
+const TOP_MARGIN = 0.08;
+const BOTTOM_MARGIN = 0.2;
 
 /**
  * Owns the Lightweight Charts instance. Responsibilities:
@@ -92,6 +95,9 @@ export class ChartController {
   private readonly onNeedOlder?: () => void;
   private pendingJump = false;
   private crosshairSuppressed = false;
+  /** CSS px to keep free above the highest bar (see setTopInset), and the margin applied for it. */
+  private topInsetPx = 0;
+  private topMargin = TOP_MARGIN;
   /** A requested view change has not been painted yet (the library applies it next frame). */
   private settling = false;
   private readonly settleWaiters: Array<() => void> = [];
@@ -125,7 +131,7 @@ export class ChartController {
       },
       rightPriceScale: {
         borderColor: THEME.border,
-        scaleMargins: { top: 0.08, bottom: 0.2 },
+        scaleMargins: { top: TOP_MARGIN, bottom: BOTTOM_MARGIN },
       },
       timeScale: {
         borderColor: THEME.border,
@@ -251,6 +257,7 @@ export class ChartController {
     }
     this.pendingTails = [];
     this.pendingFull = false;
+    this.syncTopMargin(); // a label strip shown or hidden while the pen was down
   }
 
   get isDeferring(): boolean {
@@ -296,6 +303,13 @@ export class ChartController {
 
   get barCount(): number {
     return this.displayedTimes.length;
+  }
+
+  /** High and low of the displayed bar at an index (what the chart shows, deferred updates excluded). */
+  barAt(index: number): { readonly high: number; readonly low: number } | null {
+    if (!(index >= 0 && index < this.displayedTimes.length)) return null;
+    const bar = this.candles.dataByIndex(index);
+    return bar && 'high' in bar ? { high: bar.high, low: bar.low } : null;
   }
 
   // ---- geometry ---------------------------------------------------------------------------
@@ -349,7 +363,33 @@ export class ChartController {
       // Any paint after a requested view change has applied it.
       if (this.settling) this.settle();
       for (const l of this.viewListeners) l();
+      // After the settle check: a margin change marks the view as settling until it is painted.
+      this.syncTopMargin();
     });
+  }
+
+  /**
+   * Keeps at least `px` CSS px of the pane free above the highest bar while the price scale
+   * auto-scales (never less than the default margin); 0 restores the default. The label strip
+   * lies over the top of the pane: without this, labels above the highest bars would be under it.
+   */
+  setTopInset(px: number): void {
+    this.topInsetPx = Math.max(0, px);
+    this.syncTopMargin();
+  }
+
+  /**
+   * Applies the top inset as a share of the current pane height (re-checked after every paint).
+   * Waits while updates are deferred: the price scale must not change under the pen.
+   */
+  private syncTopMargin(): void {
+    if (this.deferDepth > 0 || this.disposed) return;
+    const height = this.chart.paneSize(0).height;
+    const top = this.topInsetPx > 0 && height > 0 ? Math.min(0.5, Math.max(TOP_MARGIN, this.topInsetPx / height)) : TOP_MARGIN;
+    if (Math.abs(top - this.topMargin) < 1e-4) return;
+    this.topMargin = top;
+    this.markSettling();
+    this.candles.priceScale().applyOptions({ scaleMargins: { top, bottom: BOTTOM_MARGIN } });
   }
 
   /**

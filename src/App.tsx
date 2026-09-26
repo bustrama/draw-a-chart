@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createRuntime, type Runtime } from './app/runtime';
 import { exposeTestHooks, loadMarket, rememberRecent, saveMarket } from './app/runtimeConfig';
 import type { MarketSelection, Workspace } from './app/Workspace';
 import type { EngineState } from './drawing/DrawingEngine';
+import { DEFAULT_STAMP, STAMP_REACH } from './drawing/stamps';
+import { LabelStrip } from './ui/LabelStrip';
 import { ScreenshotButton } from './ui/ScreenshotButton';
 import { SyncButton } from './ui/SyncButton';
 import { Toolbar } from './ui/Toolbar';
@@ -18,6 +20,7 @@ declare global {
 
 const IDLE_ENGINE: EngineState = {
   tool: 'pen',
+  stamp: DEFAULT_STAMP,
   color: '#ffd166',
   width: 2.5,
   mouseDraw: false,
@@ -74,7 +77,18 @@ export default function App() {
 
   useKeyboardShortcuts(workspace);
 
+  // Nothing is stamped under the label strip, and the chart keeps room below it for a label above
+  // the highest bar (a few px to spare).
+  const onStripBottom = useCallback(
+    (px: number | null) => {
+      workspace?.engine.setCoveredTop(px ?? 0);
+      workspace?.chart.setTopInset(px === null ? 0 : px + STAMP_REACH + 4);
+    },
+    [workspace],
+  );
+
   const feed = status?.feed;
+  const labelStrip = state.tool === 'stamp';
   return (
     <div className="flex h-dvh w-full flex-col overflow-hidden bg-ink-950 pt-[env(safe-area-inset-top)]">
       <TopBar
@@ -114,8 +128,9 @@ export default function App() {
             className={`chart-host absolute inset-0 ${state.mouseDraw ? 'cursor-crosshair' : ''}`}
             data-testid="chart-host"
           />
+          {labelStrip && <LabelStrip armed={state.stamp} color={state.color} onPick={(label) => engine?.setStamp(label)} onBottom={onStripBottom} />}
           {feed?.error && !feed.initialLoaded && (
-            <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center">
+            <div className={`pointer-events-none absolute inset-x-0 flex justify-center ${labelStrip ? 'top-16' : 'top-3'}`}>
               <div className="rounded-md border border-down/40 bg-ink-900/95 px-3 py-1.5 text-xs text-ink-200">
                 Market data unavailable: {feed.error}. Retrying…
               </div>
@@ -156,6 +171,7 @@ function useKeyboardShortcuts(workspace: Workspace | null) {
         if (key === 'p') engine.setTool('pen');
         else if (key === 'e') engine.setTool('eraser');
         else if (key === 's' || key === 'v') engine.setTool('select');
+        else if (key === 'l') engine.setTool('stamp');
         else if (key === 'd') engine.setMouseDraw(!engine.getState().mouseDraw);
         else if (e.code === 'Space') {
           e.preventDefault();

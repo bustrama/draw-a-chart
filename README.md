@@ -4,6 +4,9 @@ A personal, stylus-first charting PWA for studying and practising Wyckoff analys
 
 - **The pen draws** (Apple Pencil, Samsung S Pen) with no tool selection. Hold still at the end of a
   line to straighten it (QuickShape). Pressure-sensitive ink, eraser, lasso select, undo/redo.
+- **Wyckoff labels** (`L`, or the tag in the tool rail): pick a label from the strip (the 16
+  events, 1st/2nd/3rd B, Phases A–E), then tap bars with the pen. Events land on the bar's high or
+  low, depending on which half of the bar you tap.
 - **Fingers navigate**: pan with momentum, pinch-zoom, tap/long-press crosshair, axis scaling. They
   never draw, and a resting palm is rejected.
 - **The mouse navigates** like any chart. Press `D` (or the mouse button in the tool rail) to draw with it.

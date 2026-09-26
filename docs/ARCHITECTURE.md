@@ -43,11 +43,12 @@ src/
     timeIndex.ts     time <-> fractional logical index (the anchoring core)
     viewport.ts      immutable pane transform snapshot used by all drawing code
   drawing/
-    model.ts         Drawing types (ink / line / glyph), validation, glyph scale
+    model.ts         Drawing types (ink / line / glyph / stamp), validation, glyph scale
     store.ts         DrawingStore + History (undo/redo) = DrawingDocument per chart
-    DrawingEngine    tools, stroke sessions (draw/erase/select), QuickShape, notes, live layer
+    DrawingEngine    tools, stroke sessions (draw/erase/select/stamp), QuickShape, notes, live layer
     quickShape.ts    line recognition, hold detection, angle snapping
     classify.ts      handwriting vs drawing classification, note grouping
+    stamps.ts        Wyckoff label stamps: vocabulary, where a stamp lands (bar high/low), layout
     render/          shared stroke renderer, chart primitive, live overlay canvas
   input/
     InputRouter      capture-phase gatekeeper: routes pen/touch/mouse, blocks touch events
@@ -64,7 +65,7 @@ src/
     Workspace.ts     chart composition (chart + feed + engine + navigator + router)
     runtime.ts       app composition (provider, persistence, sync, session, previews, workspace)
     screenshot.ts    capture, clipboard, share, download
-  ui/                React controls (top bar, tool rail, palette, screenshot, sync status)
+  ui/                React controls (top bar, tool rail, palette, label strip, screenshot, sync status)
 server/              self-hosted sync server (Node 24 runs the TypeScript directly)
   main.ts            production entry (env config, graceful shutdown)
   backup.ts, restore.ts   online backup; restore with a new generation (devices resynchronize)
@@ -278,13 +279,14 @@ So:
 Unit tests cover prepend stability, future-area stability, gaps and round trips. E2E tests cover
 pan, zoom, resize and history load.
 
-### 5.2 Three drawing kinds
+### 5.2 Four drawing kinds
 
 | Kind | Stored as | Behaviour |
 |---|---|---|
 | `line` | two (time, price) points | Straight on screen between exact chart coordinates (QuickShape result). |
 | `ink` | (time, price, pressure) per point | Glued to the price action; deforms with non-uniform zoom exactly like the candles. Used for circles, boxes, projected paths. |
 | `glyph` | anchor (time, price) + CSS-px offsets at a reference scale + `ref` (px per ms when written) | Handwriting. Rigid: moves with its anchor and scales **uniformly**: `k = clamp(sqrt(zoom ratio), 0.5, 2)`. Never distorted, always legible. Glyphs written in quick succession share a `group` and anchor, forming a note. |
+| `stamp` | anchor (time, price) + `label` text + `place` (`above` / `below` / `at`) | Wyckoff label (§5.4). Constant-size text beside its anchor: above a bar's high or below its low, with a tick pointing at it, or centred in a box. |
 
 - Classification is automatic (`classify.ts`), so no tool switching is needed:
   - letter-sized strokes (≤ 60 px) are glyphs;
@@ -301,6 +303,41 @@ Everything is absolute time, and `ref` is px **per millisecond**, not per bar. A
 therefore renders correctly on any timeframe once the query stops filtering by timeframe. The
 schema keeps `timeframe` as a plain column, so sharing later is a query/visibility change, not a
 rewrite.
+
+### 5.4 Wyckoff label stamps (`stamps.ts`)
+
+- **Vocabulary**: the 16 Wyckoff events in cycle order (PS SC AR ST Spring Test LPS SOS BU JAC /
+  PSY BC UT UTAD SOW LPSY), the three waves of Phase B (1st B, 2nd B, 3rd B) and Phases A–E; the
+  chip tooltips give each event's full name and what each phase does.
+- **Pick, then tap**: the label tool (`L`) shows a strip of chips over the top of the chart. A
+  tapped chip is armed until another one is picked, so repeated labels (ST, ST, Test) take one tap
+  each. The strip lies over the price scale's top margin instead of resizing the chart, and
+  scrolls sideways (finger or mouse wheel) where it is wider than the chart.
+  - Where that margin (8 % of the pane) is smaller than the strip plus a label, the label tool
+    widens it (`ChartController.setTopInset`): the highest bar keeps room for a label above it
+    below the strip. This moves the candles a little when the tool is picked, on short panes
+    only (phones, 11" iPads in landscape); the default margin comes back with the other tools.
+    A change requested while the pen is down waits until it lifts, like data updates.
+  - Nothing is stamped under the strip (`DrawingEngine.setCoveredTop`).
+- **Where a stamp lands** (`placeStamp`): the bar under the pen is the one with the nearest centre.
+  - Events and B waves go above its high when the pen is above the bar's middle, below its low
+    otherwise: the anchor is the bar's open time and its exact high or low.
+  - Phases go to the bar's time at the pen's price (`at`), drawn in a box.
+  - Off the bars (the future area, before the first bar) a stamp stays where it was placed (`at`).
+  - The stamp follows the pen while it is down (a ghost in the live layer, snapping bar to bar) and
+    is committed where the pen lifts; lifting outside the pane (e.g. over an axis) or under the
+    strip places nothing, and the ghost disappears while the pen is there. A hovering pen (and the mouse in
+    mouse-draw mode) shows a faint ghost first. The high and low come from the displayed bar
+    (`ChartController.barAt`), which cannot change under the pen (updates are deferred while it
+    is down).
+- The **text** is stored, not an id: stamps stay readable (and machine-readable: "SC at this bar's
+  low") without the vocabulary, and a label a newer version adds still renders on an older one.
+  Validation accepts any single line of 1–24 characters.
+- Erasing, selecting, moving, recolouring and undo work on the stamp's screen box. A moved stamp
+  lands like a placed one, with its text standing in for the pen: on the bar it is dropped on,
+  above its high if the text is dropped above the bar's middle, below its low otherwise (the move
+  preview shows it there). A move that leaves it where it was is not an edit (no undo step, no
+  sync).
 
 ## 6. Market data
 
@@ -597,6 +634,12 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
   - paged pulls with `updated_at >= cursor - 2 min`, merged by `rev` (re-reads are idempotent);
   - live rows over the WebSocket;
   - every (re)connect, `online` or visibility change triggers a pull (the live feed has no replay).
+- **New drawing kinds.** A version skips rows of kinds it does not know (`parseDrawing` returns
+  null) but still moves its pull cursors past them. So each set of kinds keeps its own cursors
+  (`pullCursorKey`: `cursor:ink+line+glyph+stamp:<user>:<chart>`): after an update that adds a
+  kind, the first pull of every chart is a full one, and a tab or window still running the older
+  version (same IndexedDB) cannot move the newer version's cursors. Without it, stamps drawn on
+  another device before this one updated would never appear on it.
 - **Connection.** One WebSocket per device:
   - it reconnects with jittered backoff (1 s, doubling to 30 s), and immediately on `online` or
     when the app becomes visible again;
@@ -647,6 +690,7 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
   - **Real browsers against the production server** (Playwright `sync` project, a fresh server
     per test):
     - two devices draw and erase, compared exactly;
+    - a label stamp;
     - live preview;
     - a device opened later;
     - the offline queue;
@@ -697,6 +741,19 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
 - **iPad:** pen and finger cannot act at the same instant (Safari input exclusivity).
 - **Handwriting vs drawing** is a heuristic, with a toggle to turn it off. Changing an existing
   drawing's kind after the fact is not implemented.
+- **Label stamps:**
+  - one size (12 px text) at every zoom; two stamps on the same bar extreme overlap;
+  - a stamp on the bar still forming keeps that bar's high or low at the moment it was placed; if
+    the bar extends, the label overlaps it (moving the stamp a little snaps it to the new extreme);
+  - with the mouse they need mouse-draw mode, like every drawing;
+  - after a rollback to a server image without stamps, every stamp change (new stamps, and moves,
+    recolours and deletions of synced ones) is refused (`invalid`) and dropped from the outbox:
+    the device that made it keeps it, the other devices do not get it, and it is not sent again
+    when the server is upgraded. The sync status shows the error until the next clean send;
+  - while a browser profile still has a tab or window of a version without stamps open, that
+    version shares the outbox and may receive the answer for a stamp changed in the updated one.
+    After a conflict or a lost response it cannot store the server's copy of the stamp, so the
+    stamp's next change conflicts and is replaced by the server's version.
 - **Eraser** removes whole strokes. There is no partial (pixel) erasing.
 - **Scales:** crypto times are shown in UTC, US stocks and futures in New York time (no local-time option). A log price scale is not supported,
   because `Viewport` uses a linear price mapping behind a `PriceMapping` interface.
@@ -749,6 +806,10 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
 | Committed drawings as `'normal'` series primitive; live overlay canvas | All primitives; all overlay | Same-frame sync + screenshots; `'top'` = crosshair canvas (repainted per mouse move, not in screenshots) |
 | Persist absolute time + price; own fractional mapping | Logical indices; LWC coordinate APIs | Indices shift on history load; LWC converts integer logicals only |
 | Handwriting = rigid glyph notes (sqrt-damped, clamped uniform scale) | Distort with chart; constant pixel size | Legible under non-uniform zoom yet still "belongs" to the chart |
+| Wyckoff labels as a `stamp` kind placed by pick-then-tap | Handwritten labels only; tap a bar, then pick from a menu at the pen | Handwriting stays available; stamps are neat at any zoom, sit exactly on the bar's high or low, and can be read by code later. Pick-then-tap keeps the chart uncovered and repeats a label with one tap |
+| Stamps store their text | A label id | Readable without the vocabulary; labels a newer version adds still render on older ones |
+| Label strip over the chart's top margin, widened on short panes while the tool is on | A row that resizes the chart; a strip that covers labels above the highest bars | A resize moves the candles on every tool switch on every screen; widening the margin moves them a little, and only where the default margin is too small |
+| Lifting a stamp outside the pane cancels it | Always commit (like ink) | A press has no other way to take a mis-tap back before it is saved and synced |
 | Defer market-data updates while the pen is down | Let chart move | The surface must not move under the nib |
 | Self-hosted sync server in one container | Supabase (hosted or self-hosted) | One user, no accounts, own server: Supabase's auth/Postgres/Realtime stack (about 10 containers self-hosted) is more machinery than needed. The same sync semantics fit in a small Node server. The Supabase version is in the Git history (first commit). |
 | SQLite via `node:sqlite` | Postgres; `better-sqlite3` | One file to back up; no database container; no native module to compile |
@@ -772,7 +833,9 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
 
 - **Unit (Vitest)**: time mapping (also across sessions), viewport, candle merge/gaps, feed recovery
   (with session clocks), REST pacing/backoff, stream reconnection, QuickShape, classification,
-  store/undo, palm/navigation logic, sync engine, the market API client and polling provider.
+  store/undo, palm/navigation logic, sync engine, the market API client and polling provider,
+  label stamps (vocabulary, where a stamp lands, its box, validation, the full pull after an
+  update that adds a drawing kind, and a check that the server accepts every kind the app draws).
 - **Market-data server (Vitest)**: session clocks (DST, weekends, early closes, next/prev inverse),
   the bar cache and its coverage, regular-hours bucketing, the service against fake upstreams
   (only missing ranges fetched, forming bar reuse, exchange gaps, the 15-minute rule, split purge,
@@ -792,6 +855,11 @@ started), `bucket` (the bar containing a time, or null outside sessions) and `en
   - anchoring under pan/zoom/resize/history-load, measured against the chart's own bar coordinates, plus painted-pixel checks;
   - palm rules, cancel/blur cleanup, gestures, and crosshair suppression (screenshot pixel diff);
   - mouse navigation/drawing;
+  - label stamps: the strip, placement above a high / below a low / a phase at the pen height (in
+    its box), following the pen until it lifts, cancelled when lifted outside the chart or under
+    the strip, painted in the chart canvas, erase/select/undo, a nudge that is no edit, a move
+    that lands on another bar, the room kept under the strip above the highest bar (made only
+    once the pen lifts), the `L` shortcut, reload (also in the WebKit iPad-like context);
   - persistence across reload; screenshot PNG content and clipboard;
   - the Binance code path against mocked REST/WebSocket (`page.route`, `page.routeWebSocket`).
 - **Browser (Playwright, Chromium), markets**: US mock sessions (regular hours only; a drawing in

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { PEN_COLORS, PEN_WIDTHS } from '../chart/theme';
 import type { EngineState, Tool } from '../drawing/DrawingEngine';
-import { AutoFitIcon, EraserIcon, LassoIcon, MouseIcon, PenIcon, RedoIcon, TrashIcon, UndoIcon, WritingIcon } from './icons';
+import { AutoFitIcon, EraserIcon, LabelIcon, LassoIcon, MouseIcon, PenIcon, RedoIcon, TrashIcon, UndoIcon, WritingIcon } from './icons';
 
 interface ToolbarProps {
   readonly state: EngineState;
@@ -48,6 +48,9 @@ export function Toolbar(props: ToolbarProps) {
       </ToolButton>
       <ToolButton label="Select (S)" active={state.tool === 'select'} onClick={() => props.onTool('select')} testId="tool-select">
         <LassoIcon />
+      </ToolButton>
+      <ToolButton label="Wyckoff labels (L)" active={state.tool === 'stamp'} onClick={() => props.onTool('stamp')} testId="tool-stamp">
+        <LabelIcon />
       </ToolButton>
 
       <Divider />

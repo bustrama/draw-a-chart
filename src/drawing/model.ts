@@ -65,8 +65,36 @@ export interface GlyphDrawing extends DrawingBase {
   readonly pts: readonly number[];
 }
 
-export type Drawing = InkDrawing | LineDrawing | GlyphDrawing;
+/** Where a stamp's text sits: above a bar's high, below its low, or centred on its anchor. */
+export type StampPlace = 'above' | 'below' | 'at';
+
+/**
+ * Wyckoff label stamp (an event such as `SC`, a Phase B wave, a phase). Drawn as text at a
+ * constant size beside its anchor; the text is what is stored, so the label stays readable
+ * (and machine-readable) without a vocabulary. See `stamps.ts`.
+ */
+export interface StampDrawing extends DrawingBase {
+  readonly kind: 'stamp';
+  readonly label: string;
+  /** Anchor time (ms) and price: a bar's open time and its high or low for `above`/`below`. */
+  readonly t: number;
+  readonly p: number;
+  readonly place: StampPlace;
+}
+
+export type Drawing = InkDrawing | LineDrawing | GlyphDrawing | StampDrawing;
 export type DrawingKind = Drawing['kind'];
+
+/** A key per kind: adding a kind to `Drawing` without adding it here does not compile. */
+const KINDS: Record<DrawingKind, true> = { ink: true, line: true, glyph: true, stamp: true };
+
+/**
+ * Every kind this app version understands. Rows of other kinds (from a newer version) are
+ * skipped; when this list grows, devices pull their charts in full again (`pullCursorKey`).
+ */
+export const DRAWING_KINDS = Object.keys(KINDS) as readonly DrawingKind[];
+
+export const MAX_STAMP_LABEL = 24;
 
 /** Uniform glyph scale for the current zoom: damped (square root) and clamped for legibility. */
 export const GLYPH_SCALE_MIN = 0.5;
@@ -138,9 +166,23 @@ export function parseDrawing(value: unknown): Drawing | null {
         pts: v.pts,
       };
     }
+    case 'stamp': {
+      if (!isStampLabel(v.label)) return null;
+      if (typeof v.t !== 'number' || !Number.isFinite(v.t) || typeof v.p !== 'number' || !Number.isFinite(v.p)) return null;
+      if (v.place !== 'above' && v.place !== 'below' && v.place !== 'at') return null;
+      return { ...base, kind: 'stamp', label: v.label, t: v.t, p: v.p, place: v.place };
+    }
     default:
       return null;
   }
+}
+
+/**
+ * A short single line of text: 1-24 characters, no control or invisible formatting characters
+ * (bidi overrides, zero-width spaces) and no line or paragraph separators.
+ */
+function isStampLabel(label: unknown): label is string {
+  return typeof label === 'string' && label.length > 0 && label.length <= MAX_STAMP_LABEL && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(label);
 }
 
 const MAX_POINTS = 20_000;
