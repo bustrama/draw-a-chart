@@ -22,7 +22,7 @@ Resume here in a new session. Newest notes at the top of each section.
 | 14 | Self-hosting: Dockerfile, docker-compose, online backup/restore | ✅ deployed (home server behind Cloudflare Tunnel + Access; image built on a PC and shipped; nightly backups) |
 | 15 | Market data: server bar cache (fetch only what is missing), US stocks and ETFs (Alpaca free plan: every exchange, 15 min delayed, regular hours), every Binance pair, symbol search, trading-session clocks (future area and gaps follow the calendar), New York time axis | ✅ deployed 2026-09-25 (1087971) |
 | 16 | Futures: 15 CME Group contracts (ES, NQ, YM, RTY and micros, CL, NG, GC, MGC, SI, HG, 6E) from Yahoo Finance (continuous front month, Globex hours, 10 min delayed), 4-hour/daily bars from hourly, an archive that keeps Yahoo's expiring intraday history | ✅ deployed 2026-09-26 (26588f9) |
-| 17 | Wyckoff label stamps: a label strip (his 16 events, 1st/2nd/3rd B, Phases A–E), pick-then-tap placement on a bar's high or low, a new synced drawing kind `stamp` | ✅ built 2026-09-26; **not deployed**, not tested on devices ([DEVICE_TESTING](DEVICE_TESTING.md) §6b) |
+| 17 | Wyckoff label stamps: a label strip (the 16 events, 1st/2nd/3rd B, Phases A–E), pick-then-tap placement on a bar's high or low, a new synced drawing kind `stamp` | ✅ deployed 2026-09-27 (3f4159b); not yet tested on devices ([DEVICE_TESTING](DEVICE_TESTING.md) §6b) |
 
 ## Verification snapshot (2026-09-25, market data)
 
@@ -48,6 +48,14 @@ Resume here in a new session. Newest notes at the top of each section.
 
 ## Log
 
+- 2026-09-27 (label stamps, deployed): 3f4159b runs on the home server (image built on the PC
+  and shipped; a local container smoke test first: health, app and manifest, a stamp written and
+  pulled back through the API, non-root user). Also in it: a select-tool icon that no longer looks
+  like a comment bubble (a dashed box with a pointer). Checked on the LAN: healthy, all three
+  markets on, the existing drawings served, the new bundle has the label strip, 90 of its 256 MB;
+  Access still guards chart.bustrama.com. Image tags kept: 3f4159b, 26588f9, 7e5a8f2.
+  - To do (user): the device run ([DEVICE_TESTING](DEVICE_TESTING.md) §6b); installed apps offer
+    the update ("A new version is available").
 - 2026-09-26 (Wyckoff label stamps): the user asked for label stamps: neat, machine-readable
   Wyckoff labels next to handwriting. Built, not deployed.
   - Vocabulary: the 16 events, 1st/2nd/3rd B, Phases A–E.
@@ -84,8 +92,7 @@ Resume here in a new session. Newest notes at the top of each section.
     its fix disabled.
   - Verified: lint and typecheck clean, build OK; unit 270 tests (31 files); browser 69 tests
     (8 new for stamps in Chromium, 1 in the WebKit iPad-like context, 1 multi-device sync).
-  - To do (user): try it on the iPad and the Galaxy ([DEVICE_TESTING](DEVICE_TESTING.md) §6b),
-    then deploy (the server and the app ship together in the image).
+  - To do (user): try it on the iPad and the Galaxy ([DEVICE_TESTING](DEVICE_TESTING.md) §6b).
 
 - 2026-09-26 (market cache backup): `market.sqlite` now holds futures history Yahoo no longer
   serves, so the home server backs it up nightly (03:40, `server/backup.ts` with
