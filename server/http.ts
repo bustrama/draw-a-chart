@@ -6,6 +6,7 @@ import { AlpacaUpstream, type AlpacaConfig, type AlpacaFeed } from './market/alp
 import { createMarketApp, type MarketApp } from './market/api.ts';
 import { BinanceUpstream } from './market/binance.ts';
 import { BarCache } from './market/cache.ts';
+import { accessToken, client, logRequest } from './requestLog.ts';
 import { MarketService, type CryptoUpstream, type StockUpstream } from './market/service.ts';
 import { createStaticHandler } from './static.ts';
 import { DrawingStore } from './store.ts';
@@ -39,6 +40,8 @@ export interface ServerOptions {
   readonly heartbeatMs?: number;
   readonly allowedOrigins?: readonly string[];
   readonly version?: string;
+  /** One log line per request (debugging a login proxy such as Cloudflare Access). */
+  readonly requestLog?: boolean;
   readonly log?: (message: string) => void;
 }
 
@@ -111,6 +114,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const serveStatic = options.staticDir ? createStaticHandler(options.staticDir) : null;
 
   const route = async (req: IncomingMessage, res: ServerResponse) => {
+    if (options.requestLog) {
+      const startedAt = performance.now();
+      res.once('finish', () => logRequest(req, res, startedAt, log));
+    }
     try {
       if (market && (await market.app.handle(req, res))) return;
       if (await app.handle(req, res)) return;
@@ -124,6 +131,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   };
   const server = createServer((req, res) => void route(req, res));
   server.on('upgrade', (req, socket, head) => {
+    if (options.requestLog) {
+      const jwt = req.headers['cf-access-jwt-assertion'];
+      log(`[req] UPGRADE ${(req.url ?? '/').split('?')[0]} ${client(req.headers['user-agent'])} ${accessToken(typeof jwt === 'string' ? jwt : undefined)}`);
+    }
     try {
       if (!app.upgrade(req, socket, head)) socket.destroy();
     } catch (err) {

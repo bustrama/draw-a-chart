@@ -16,6 +16,8 @@
  *   ALPACA_FEED delayed_sip (default: every exchange, 15 min late: the free plan), sip (real time,
  *               paid) or iex (one exchange, real time)
  *   ALPACA_TRADING_URL  trading API host for the calendar and asset list (default: by key type)
+ *   REQUEST_LOG '1' logs one line per request (path, status, request kind, browser family, how long
+ *               a login proxy's access token is valid; never tokens, cookies or identities)
  */
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -36,6 +38,7 @@ const server = await startServer({
   dbFile,
   staticDir,
   market,
+  requestLog: env.REQUEST_LOG === '1',
   maxRows: intEnv('MAX_ROWS', 100_000),
   allowedOrigins: (env.ALLOWED_ORIGINS ?? '')
     .split(',')

@@ -23,6 +23,8 @@ services:
       APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:-}
       # delayed_sip (default, free: every exchange, 15 min late), sip (real time, paid), iex.
       ALPACA_FEED: ${ALPACA_FEED:-delayed_sip}
+      # REQUEST_LOG=1 in .env: one log line per request (debugging a login proxy such as Access).
+      REQUEST_LOG: ${REQUEST_LOG:-}
     #   MAX_ROWS: "100000"          # live drawings per user (a guard against runaway clients)
     #   ALLOWED_ORIGINS: ""         # only if a proxy rewrites the Host header (live connection)
 
