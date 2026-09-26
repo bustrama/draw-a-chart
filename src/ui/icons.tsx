@@ -34,10 +34,13 @@ export const EraserIcon = (p: IconProps) => (
   </Svg>
 );
 
+/** A label chip reading "SC" (the Wyckoff label tool). */
 export const LabelIcon = (p: IconProps) => (
   <Svg {...p}>
-    <path d="M3.5 11.6V5a1.5 1.5 0 0 1 1.5-1.5h6.6a1.5 1.5 0 0 1 1.06.44l7.4 7.4a1.5 1.5 0 0 1 0 2.12l-6.6 6.6a1.5 1.5 0 0 1-2.12 0l-7.4-7.4a1.5 1.5 0 0 1-.44-1.06z" />
-    <circle cx="8" cy="8" r="1.3" />
+    <rect x="2.5" y="5.5" width="19" height="13" rx="3" />
+    <text x="12" y="15.5" textAnchor="middle" fontSize="9.5" fontWeight="800" fill="currentColor" stroke="none">
+      SC
+    </text>
   </Svg>
 );
 
