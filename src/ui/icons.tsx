@@ -41,10 +41,11 @@ export const LabelIcon = (p: IconProps) => (
   </Svg>
 );
 
-export const LassoIcon = (p: IconProps) => (
+/** A dashed selection box with a pointer arrow (the select tool). */
+export const SelectIcon = (p: IconProps) => (
   <Svg {...p}>
-    <path d="M7 17.5C4.6 16.3 3 14.4 3 12.2 3 8.2 7 5 12 5s9 3.2 9 7.2-4 7.2-9 7.2c-.9 0-1.8-.1-2.6-.3" strokeDasharray="2.4 2.2" />
-    <path d="M9.5 18.5c0 1.4-1 2.5-2.3 2.5" />
+    <rect x="3.5" y="3.5" width="12" height="12" rx="1.5" strokeDasharray="2.4 2.4" />
+    <path d="M11 11l9.5 3.6-4.1 1.4-1.4 4.1z" fill="currentColor" />
   </Svg>
 );
 
