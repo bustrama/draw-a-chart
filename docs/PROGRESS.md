@@ -21,7 +21,7 @@ Resume here in a new session. Newest notes at the top of each section.
 | 13 | Physical device testing (iPad + Apple Pencil, Galaxy + S Pen) | ✅ tested by the user on an iPad Pro (Apple Pencil) and a Galaxy S26 Ultra (S Pen), 2026-09-25: "works just great". The itemized `DEVICE_TESTING.md` results were not recorded. |
 | 14 | Self-hosting: Dockerfile, docker-compose, online backup/restore | ✅ deployed (home server behind Cloudflare Tunnel + Access; image built on a PC and shipped; nightly backups) |
 | 15 | Market data: server bar cache (fetch only what is missing), US stocks and ETFs (Alpaca free plan: every exchange, 15 min delayed, regular hours), every Binance pair, symbol search, trading-session clocks (future area and gaps follow the calendar), New York time axis | ✅ deployed 2026-09-25 (1087971) |
-| 16 | Futures: 15 CME Group contracts (ES, NQ, YM, RTY and micros, CL, NG, GC, MGC, SI, HG, 6E) from Yahoo Finance (continuous front month, Globex hours, 10 min delayed), 4-hour/daily bars from hourly, an archive that keeps Yahoo's expiring intraday history | ✅ built 2026-09-26, not deployed yet |
+| 16 | Futures: 15 CME Group contracts (ES, NQ, YM, RTY and micros, CL, NG, GC, MGC, SI, HG, 6E) from Yahoo Finance (continuous front month, Globex hours, 10 min delayed), 4-hour/daily bars from hourly, an archive that keeps Yahoo's expiring intraday history | ✅ deployed 2026-09-26 (26588f9) |
 
 ## Verification snapshot (2026-09-25, market data)
 
@@ -47,6 +47,14 @@ Resume here in a new session. Newest notes at the top of each section.
 
 ## Log
 
+- 2026-09-26 (futures, deployed): 26588f9 runs on the home server (image built on the PC and
+  shipped; a local container smoke test first). Checked on the LAN: all three markets available,
+  "es" finds the E-mini first and Eversource second, ES bars and the futures calendar (150 KB),
+  US stocks and crypto unchanged; Access still guards chart.bustrama.com. The archive's first run
+  (2 minutes after start, ES only: it had been charted) stored 56 000 ES bars (1-minute from
+  28 Aug, 5/15-minute from 29 Jul, hourly/4-hour from Sep 2024); zero-volume bars only where Yahoo
+  has them (18:00 opens). `market.sqlite` 1.9 → 4.8 MB; the container uses 50 of its 256 MB.
+  Image tags kept: 26588f9, 7e5a8f2, 1087971.
 - 2026-09-26 (futures): the user asked for ES. Alpaca has no futures data (stocks, options, crypto
   only; its futures broker registered in August 2026 but has not started), so futures come from
   Yahoo Finance's chart API: free, no key, unofficial, 10 minutes delayed.
