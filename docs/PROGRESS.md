@@ -46,6 +46,15 @@ Resume here in a new session. Newest notes at the top of each section.
 
 ## Log
 
+- 2026-09-26 (Access login on the Galaxy): the app asked to sign in for sync, and **Sign in
+  again** only reloaded it. The server was fine (sync answered on the LAN, the service worker leaves
+  `/api/` to the network). Deleting the site's cookies in Chrome and signing in fixed it.
+  - New: `REQUEST_LOG=1` logs one line per request (path, status, request kind, browser family,
+    how long the Access token is valid; never tokens or identities). With it on, every request
+    from the Galaxy passed Access after the fix, and the token was valid **24 hours**: the Access
+    application's session is 24 h, not the month the runbook said. It is off again.
+  - To do (user, Cloudflare dashboard): set the Access application's session duration to 1 month.
+  - Suspected cause: a stale Access cookie the new login did not replace (unconfirmed).
 - 2026-09-25 (market data, deployed): 1087971 runs on the home server with the Alpaca key in its
   `.env`. Checked on the LAN: health, session (drawings intact: the existing BTCUSDT 1h drawings are
   still served under `binance`), markets, bars, search; the first US request after the restart took
@@ -235,6 +244,9 @@ Resume here in a new session. Newest notes at the top of each section.
 
 ## Known gaps / next steps
 
+- Access login: if **Sign in again** comes back still signed out, the app could say so and
+  explain clearing the site's cookies (today it just asks again). DEVICE_TESTING 6.9 on the iPad
+  is still untested.
 - Market data: a pre/post-market option for stocks; rescale drawings after a stock split (the
   cache is rescaled, drawings are not; ARCHITECTURE §10); price precision for sub-dollar stocks;
   the closing auction in the last intraday bar; real-time US data when trading starts

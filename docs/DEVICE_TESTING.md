@@ -105,4 +105,5 @@ hardware before it can be called verified. Record results in the table at the en
 
 | Date | Device / OS / browser | Section | Result | Notes |
 |---|---|---|---|---|
-| | | | | |
+| 2026-09-25 | iPad Pro (Apple Pencil), Galaxy S26 Ultra (S Pen) | all | ✅ "works just great" (user) | Itemized results not recorded |
+| 2026-09-26 | Galaxy S26 Ultra, Chrome, installed app | 6.9 | ❌ then ✅ | After the Access session expired, **Sign in again** only reloaded the app and it kept asking. Deleting the site's cookies in Chrome, then signing in, fixed it. The request log (`REQUEST_LOG=1`) then showed every request passing, with an Access token valid **24 h**. Suspected cause: a stale Access cookie that the new login did not replace; unconfirmed. |
