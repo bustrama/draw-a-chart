@@ -22,7 +22,7 @@ Resume here in a new session. Newest notes at the top of each section.
 | 14 | Self-hosting: Dockerfile, docker-compose, online backup/restore | ✅ deployed (home server behind Cloudflare Tunnel + Access; image built on a PC and shipped; nightly backups) |
 | 15 | Market data: server bar cache (fetch only what is missing), US stocks and ETFs (Alpaca free plan: every exchange, 15 min delayed, regular hours), every Binance pair, symbol search, trading-session clocks (future area and gaps follow the calendar), New York time axis | ✅ deployed 2026-09-25 (1087971) |
 | 16 | Futures: 15 CME Group contracts (ES, NQ, YM, RTY and micros, CL, NG, GC, MGC, SI, HG, 6E) from Yahoo Finance (continuous front month, Globex hours, 10 min delayed), 4-hour/daily bars from hourly, an archive that keeps Yahoo's expiring intraday history | ✅ deployed 2026-09-26 (26588f9) |
-| 17 | Wyckoff label stamps: a label strip (the 16 events, 1st/2nd/3rd B, Phases A–E), pick-then-tap placement on a bar's high or low, a new synced drawing kind `stamp` | ✅ deployed 2026-09-27 (3f4159b); not yet tested on devices ([DEVICE_TESTING](DEVICE_TESTING.md) §6b) |
+| 17 | Wyckoff label stamps: a label strip (the 16 events, 1st/2nd/3rd B, Phases A–E), pick-then-tap placement on a bar's high or low, a new synced drawing kind `stamp` | ✅ deployed 2026-09-27 (3f4159b; icons 158f363); not yet tested on devices ([DEVICE_TESTING](DEVICE_TESTING.md) §6b) |
 
 ## Verification snapshot (2026-09-25, market data)
 
@@ -48,6 +48,10 @@ Resume here in a new session. Newest notes at the top of each section.
 
 ## Log
 
+- 2026-09-27 (label tool icon, deployed): 158f363 runs on the home server: the label tool's icon
+  is a chip reading "SC" (the tag read as a price tag). Same checks as below (local smoke test;
+  healthy on the LAN, drawings served, Access in front). Image tags kept: 158f363, 3f4159b,
+  26588f9.
 - 2026-09-27 (label stamps, deployed): 3f4159b runs on the home server (image built on the PC
   and shipped; a local container smoke test first: health, app and manifest, a stamp written and
   pulled back through the API, non-root user). Also in it: a select-tool icon that no longer looks
